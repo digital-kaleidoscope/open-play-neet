@@ -10,5 +10,5 @@ execute:
 
 repo-url: https://github.com/nballou/open-play-demographics
 site-url: https://nballou.github.io/open-play-demographics/
-data-url: https://example.com
+data-url: https://doi.org/10.5281/zenodo.18687818
 data-license: CC0

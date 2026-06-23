@@ -79,6 +79,7 @@ index.tex
 index.html
 .gitignore
 index.rmarkdown
+index.docx
 
 # Alt text reference file
 alt-text.txt
@@ -90,3 +91,4 @@ _quarto-anon.yml
 references-anon.bib
 index-anon-header.yml
 index-acm.pdf
+neet-exploration.qmd

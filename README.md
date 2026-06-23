@@ -86,18 +86,6 @@ quarto render index.qmd --to html
 quarto render index.qmd --to preprint-typst
 quarto render index.qmd --to acm-pdf
 ```
-
-## Key Analyses
-
-The manuscript includes:
-
-1. **Play volume analysis** — Weekly hours, session counts, and session duration across demographic groups
-2. **Engagement patterns** — How long players stick with individual games
-3. **Temporal patterns** — Time-of-day and day-of-week play distributions
-4. **Genre preferences** — Radar charts showing relative genre allocations by demographic group
-5. **Intersectional analysis** — Heatmap examining combinations of demographic characteristics
-6. **Variance decomposition** — Eta-squared and R² quantifying how much demographics explain
-
 <!--## Citation
 
 If you use this code or analysis, please cite:
