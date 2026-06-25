@@ -2,7 +2,7 @@
 
 This repository contains the reproducible manuscript and analysis code for a descriptive study examining what video game play looks like among youth that are not in education, employment, or training (NEET).
 
-The rendered manuscript is available at [https://nballou.github.io/open-play-neet/](https://nballou.github.io/open-play-neet/).
+The rendered manuscript is available at [https://digital-kaleidoscope.github.io/open-play-neet/](https://digital-kaleidoscope.github.io/open-play-neet/).
 
 ## Repository Structure
 
@@ -40,7 +40,7 @@ Key data components used:
 1. Clone this repository:
 2. 
    ```bash
-   git clone https://github.com/nballou/open-play-neet.git
+   git clone https://github.com/digital-kaleidoscope/open-play-neet.git
    cd open-play-neet
    ```
 

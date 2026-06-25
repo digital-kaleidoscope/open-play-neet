@@ -1,13 +1,22 @@
 ---
 title: |
-  TODO
+  Patterns of gaming behavior among NEET and non-NEET youth: A descriptive analysis of multi-platform telemetry
 author:
+  - name: Michael Trotter
+    affiliations:
+      - ref: 1
+  - name: Jo Iacovides
+    affiliations:
+      - ref: 2
+  - name: Regan Mandryk
+    affiliations:
+      - ref: 3
   - name: Nick Ballou
     corresponding: true
     orcid: 0000-0003-4126-0696
     email: nick@nickballou.com
     affiliations:
-      - ref: 1
+      - ref: 4
     roles:
       - conceptualization
       - data curation
@@ -19,9 +28,16 @@ author:
       - editing
 affiliations:
   - id: 1
+    name: Halmstad University
+    country: Sweden
+  - id: 2
+    name: University of Victoria
+    country: Canada
+  - id: 3
+    name: University of York
+    country: United Kingdom
+  - id: 4
     name: Imperial College London
-    department: Dyson School of Design Engineering
-    city: London
     country: United Kingdom
 abstract: |
  TODO
@@ -513,7 +529,8 @@ dat <- intake |>
 #| label: prepare-matching
 #| code-summary: "Show code (1:1 propensity score matching of NEET to non-NEET participants)"
 #| output: false
-
+#| include: false
+#| 
 # Match each NEET participant to one non-NEET participant with similar age,
 # gender, ethnicity, and country using nearest-neighbor PSM (logistic propensity model).
 match_input <- dat |>
@@ -543,7 +560,11 @@ dat_matched <- dat |> filter(pid %in% matched_pids)
 
 # Introduction
 
+We compare gaming behaviour between young people who are NEET (not in education, employment, or training; age ≤ 25) and a 1:1 propensity-score-matched sample of non-NEET players matched on age, gender, ethnicity, and country, using platform telemetry (Steam, Xbox, Nintendo) restricted to the three months before and after each participant's intake survey.
+
 ## Top games
+
+The table below ranks the ten most-played games (by total playtime) separately for matched NEET and non-NEET players, alongside the number and percentage of each group who played the game, minutes per player, and genre metadata from IGDB.
 
 ```{r}
 #| label: top-games
@@ -623,6 +644,8 @@ bind_rows(top_10(top_games, TRUE), top_10(top_games, FALSE)) |>
 
 ## Time of day
 
+The figure below shows each group's share of total playtime across hours of the day, indicating when NEET and non-NEET players tend to game.
+
 ```{r}
 #| label: fig-time-of-day
 #| fig-cap: "Distribution of play across hours of the day for matched NEET and non-NEET players. Lines show each group's share of total playtime per hourly bin (timestamps in local time)."
@@ -653,6 +676,8 @@ ggplot(hourly_neet, aes(x = hour, y = prop, colour = group)) +
 ```
 
 ## Distributions
+
+The raincloud plots below compare the matched groups on six variables: objective playtime from telemetry, self-reported play, gaming disorder symptoms (GDT, wave 1), life satisfaction, and the perceived value of gaming for work and daily routines.
 
 ```{r}
 #| label: fig-distributions
@@ -715,10 +740,20 @@ gv_work <- bw_matched |>
 # Gaming value (routines): mean across all waves (-3 to 3)
 gv_routines <- bw_matched |>
   group_by(pid, neet) |>
-  summarise(value = mean(gaming_value_routines, na.rm = TRUE), .groups = "drop") |>
+  summarise(
+    value = mean(gaming_value_routines, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
   mutate(variable = "Gaming value: routines (\u22123\u20133)")
 
-plot_data <- bind_rows(telemetry_hrs, self_rep, gdt, life_sat_dat, gv_work, gv_routines) |>
+plot_data <- bind_rows(
+  telemetry_hrs,
+  self_rep,
+  gdt,
+  life_sat_dat,
+  gv_work,
+  gv_routines
+) |>
   filter(!is.na(value)) |>
   mutate(
     group = if_else(neet, "NEET", "Non-NEET"),
