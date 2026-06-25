@@ -200,6 +200,7 @@ surveys <- read_csv(
 ) |>
   filter(pid %in% intake$pid)
 
+
 biweekly <- read_csv(
   file.path(extract_dir, "data/clean/survey_biweekly.csv.gz"),
   guess_max = 10000
@@ -640,19 +641,20 @@ bind_rows(top_10(top_games, TRUE), top_10(top_games, FALSE)) |>
     digits = 1,
     caption = "Top 10 games by total play time — matched NEET and non-NEET players"
   ) |>
-  group_tt(i = list("NEET" = 1, "Non-NEET" = 11))
+  group_tt(i = list("NEET" = 1, "Non-NEET" = 11)) |>
+  style_tt(fontsize = .8)
 ```
 
 ## Time of day
 
-The figure below shows each group's share of total playtime across hours of the day, indicating when NEET and non-NEET players tend to game.
+The figure below shows NEET players' playtime share relative to non-NEET players at each hour of the day. Positive values indicate hours where NEET players account for a larger share of play; negative values indicate hours where non-NEET players are relatively more active.
 
 ```{r}
 #| label: fig-time-of-day
-#| fig-cap: "Distribution of play across hours of the day for matched NEET and non-NEET players. Lines show each group's share of total playtime per hourly bin (timestamps in local time)."
+#| fig-cap: "NEET minus non-NEET difference in share of total playtime per hour (percentage points, local time). Bars above zero indicate hours where NEET players are proportionally more active; bars below zero indicate the reverse."
 #| code-summary: "Show code (time-of-day figure)"
 
-hourly_neet <- hourly_telemetry |>
+hourly_diff <- hourly_telemetry |>
   inner_join(dat_matched |> distinct(pid, neet), by = "pid") |>
   mutate(hour = hour(hour_start_local)) |>
   group_by(neet, hour) |>
@@ -660,19 +662,25 @@ hourly_neet <- hourly_telemetry |>
   group_by(neet) |>
   mutate(prop = total_minutes / sum(total_minutes)) |>
   ungroup() |>
-  mutate(group = if_else(neet, "NEET", "Non-NEET"))
+  select(neet, hour, prop) |>
+  pivot_wider(names_from = neet, values_from = prop, names_prefix = "neet_") |>
+  # Difference in percentage points: NEET share minus non-NEET share
+  mutate(diff_pp = 100 * (neet_TRUE - neet_FALSE))
 
-ggplot(hourly_neet, aes(x = hour, y = prop, colour = group)) +
-  geom_line(linewidth = 0.9) +
+ggplot(hourly_diff, aes(x = hour, y = diff_pp, fill = diff_pp > 0)) +
+  geom_col(width = 0.85) +
+  geom_hline(yintercept = 0, linewidth = 0.4, colour = "grey30") +
   scale_x_continuous(
     breaks = seq(0, 21, by = 3),
     labels = c("12am", "3am", "6am", "9am", "12pm", "3pm", "6pm", "9pm")
   ) +
-  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
-  scale_colour_manual(
-    values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8")
+  scale_y_continuous(labels = \(x) glue("{x} pp")) +
+  scale_fill_manual(
+    values = c("TRUE" = "#E41A1C", "FALSE" = "#377EB8"),
+    labels = c("TRUE" = "NEET higher", "FALSE" = "Non-NEET higher"),
+    name = NULL
   ) +
-  labs(x = "Hour of day", y = "Share of total playtime", colour = NULL) +
+  labs(x = "Hour of day (local time)", y = "NEET \u2212 non-NEET (pp)") +
   theme(legend.position = "bottom")
 ```
 
@@ -772,13 +780,12 @@ plot_data <- bind_rows(
   )
 
 ggplot(plot_data, aes(x = value, y = group, colour = group, fill = group)) +
-  # Mirrored dotsinterval: NEET dots face downward, Non-NEET upward
-  stat_dotsinterval(
+  # Mirrored dots: NEET faces downward, Non-NEET upward (no built-in summary point)
+  stat_dots(
     aes(side = if_else(neet, "bottom", "top")),
     overflow = "compress",
     dotsize = 0.4,
-    alpha = 0.7,
-    .width = c(0.5, 0.95)
+    alpha = 0.7
   ) +
   # Line connecting group means within each panel
   stat_summary(
@@ -786,8 +793,7 @@ ggplot(plot_data, aes(x = value, y = group, colour = group, fill = group)) +
     fun = mean,
     geom = "line",
     colour = "black",
-    linewidth = 0.7,
-    orientation = "y"
+    linewidth = 0.7
   ) +
   # Mean points on the connecting line
   stat_summary(
@@ -798,14 +804,107 @@ ggplot(plot_data, aes(x = value, y = group, colour = group, fill = group)) +
     size = 2.5,
     shape = 21,
     fill = "white",
-    stroke = 1,
-    orientation = "y"
+    stroke = 1
   ) +
   facet_wrap(~variable, scales = "free_x", nrow = 3) +
+  scale_y_discrete(expand = expansion(add = 0.8)) +
   scale_fill_manual(values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8")) +
   scale_colour_manual(values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8")) +
   labs(x = NULL, y = NULL) +
   guides(fill = "none", colour = "none") +
   theme(panel.spacing = unit(12, "pt"))
+```
+
+## Social play modes
+
+The figure below compares the share of playtime spent in competitive multiplayer and cooperative games between matched NEET and non-NEET players. Games are tagged as competitive if IGDB lists Multiplayer, Massively Multiplayer Online, or Battle Royale modes, and as cooperative if Co-operative or Split screen modes are listed.
+
+```{r}
+#| label: calc-social-modes
+#| code-summary: "Show code (social mode proportions)"
+
+# Tag each game title with competitive/cooperative flags
+games_modes <- games |>
+  mutate(
+    is_competitive = !is.na(game_modes) &
+      str_detect(
+        game_modes,
+        "Multiplayer|Massively Multiplayer Online|Battle Royale"
+      ),
+    is_cooperative = !is.na(game_modes) &
+      str_detect(game_modes, "Co-operative|Split screen")
+  ) |>
+  summarise(
+    is_competitive = any(is_competitive),
+    is_cooperative = any(is_cooperative),
+    .by = original_name
+  )
+
+# Per-person share of playtime in each mode, restricted to matched sample
+mode_playtime_neet <- hourly_telemetry |>
+  inner_join(dat_matched |> distinct(pid, neet), by = "pid") |>
+  left_join(games_modes, by = c("title_id" = "original_name")) |>
+  group_by(pid, neet) |>
+  summarise(
+    total_min = sum(minutes, na.rm = TRUE),
+    competitive_min = sum(minutes[is_competitive == TRUE], na.rm = TRUE),
+    cooperative_min = sum(minutes[is_cooperative == TRUE], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    pct_competitive = 100 * competitive_min / total_min,
+    pct_cooperative = 100 * cooperative_min / total_min
+  )
+
+# Bootstrap 95% CIs for mean % by NEET status and mode
+set.seed(42)
+mode_summary_neet <- mode_playtime_neet |>
+  pivot_longer(
+    cols = c(pct_competitive, pct_cooperative),
+    names_to = "mode",
+    names_prefix = "pct_",
+    values_to = "pct"
+  ) |>
+  mutate(
+    mode = str_to_title(mode),
+    group = if_else(neet, "NEET", "Non-NEET")
+  ) |>
+  group_by(mode, group) |>
+  summarise(
+    mean_pct = mean(pct, na.rm = TRUE),
+    ci_lo = quantile(replicate(1000, mean(sample(pct, replace = TRUE))), 0.025),
+    ci_hi = quantile(replicate(1000, mean(sample(pct, replace = TRUE))), 0.975),
+    .groups = "drop"
+  )
+```
+
+```{r}
+#| label: fig-social-modes
+#| fig-cap: "Share of playtime in competitive and cooperative game modes for matched NEET and non-NEET players. Panels are independent (a game can be both competitive and cooperative, so shares need not sum to 100%). Points show group means; horizontal lines show bootstrap 95% confidence intervals."
+#| code-summary: "Show code (social modes dotplot)"
+#| fig-width: 5
+#| fig-asp: 0.8
+
+ggplot(mode_summary_neet, aes(x = mean_pct, y = group, colour = group)) +
+  # Segment connecting NEET and Non-NEET means within each panel
+  geom_line(aes(group = 1), colour = "grey70", linewidth = 1) +
+  geom_errorbarh(aes(xmin = ci_lo, xmax = ci_hi), height = 0, linewidth = 0.5) +
+  geom_point(size = 3.5) +
+  facet_wrap(~mode, ncol = 1) +
+  scale_colour_manual(
+    values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8"),
+    name = NULL
+  ) +
+  scale_x_continuous(labels = \(x) glue("{x}%")) +
+  labs(x = "Share of playtime", y = NULL) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "top",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank(),
+    strip.background = element_rect(fill = "grey20", colour = "grey20"),
+    strip.text = element_text(colour = "white", face = "bold", size = 9),
+    axis.text.y = element_text(size = 11)
+  )
 ```
 

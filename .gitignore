@@ -10,6 +10,7 @@
 /_site/
 
 data/
+*.csv
 
 .lintr
 settings.json
