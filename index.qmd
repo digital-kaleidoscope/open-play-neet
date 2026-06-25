@@ -338,7 +338,9 @@ if (file.exists(cache_file)) {
 
   hourly_telemetry <- bind_rows(hourly_from_sessions, hourly_from_steam)
 
-  # Restrict each participant's data to ±3 months (91 days) of their intake survey date
+  # Restrict each participant's data to the 91 days after their intake survey date.
+  # Steam data is only available from intake onward, so using a symmetric window
+  # would create unequal platform coverage across the pre/post period.
   intake_window <- intake |>
     select(pid, intake_date = date) |>
     mutate(pid = as.character(pid))
@@ -346,12 +348,16 @@ if (file.exists(cache_file)) {
   hourly_telemetry <- hourly_telemetry |>
     left_join(intake_window, by = "pid") |>
     filter(
-      abs(as.numeric(difftime(
+      as.numeric(difftime(
         as.Date(hour_start_local),
         intake_date,
         units = "days"
-      ))) <=
-        91
+      )) >= 0,
+      as.numeric(difftime(
+        as.Date(hour_start_local),
+        intake_date,
+        units = "days"
+      )) <= 91
     ) |>
     select(-intake_date)
 
@@ -562,7 +568,7 @@ dat_matched <- dat |> filter(pid %in% matched_pids)
 
 # Introduction
 
-We compare gaming behaviour between young people who are NEET (not in education, employment, or training; age ≤ 25) and a 1:1 propensity-score-matched sample of non-NEET players matched on age, gender, ethnicity, and country, using platform telemetry (Steam, Xbox, Nintendo) restricted to the three months before and after each participant's intake survey.
+We compare gaming behaviour between young people who are NEET (not in education, employment, or training; age ≤ 25) and a 1:1 propensity-score-matched sample of non-NEET players matched on age, gender, ethnicity, and country, using platform telemetry (Steam, Xbox, Nintendo) restricted to the three months following each participant's intake survey (Steam data is only available from intake onward, so a symmetric pre/post window would create unequal platform coverage).
 
 ## Top games
 
@@ -686,21 +692,22 @@ ggplot(hourly_diff, aes(x = hour, y = diff_pp, fill = diff_pp > 0)) +
 
 ## Distributions
 
-The raincloud plots below compare the matched groups on six variables: objective playtime from telemetry, self-reported play, gaming disorder symptoms (GDT, wave 1), life satisfaction, and the perceived value of gaming for work and daily routines.
+The raincloud plots below compare the matched groups on seven variables: objective playtime and session length from telemetry, self-reported play, gaming disorder symptoms (GDT, wave 1), life satisfaction, and the perceived value of gaming for work and daily routines.
 
 ```{r}
 #| label: fig-distributions
-#| fig-cap: "Raincloud plots comparing matched NEET and non-NEET players on objective playtime (telemetry), self-reported play, gaming disorder symptoms (GDT, wave 1), and life satisfaction (mean across waves). Dots show individual participants; boxes show IQR and median; densities show the distribution shape."
+#| fig-cap: "Raincloud plots comparing matched NEET and non-NEET players on objective playtime and session length (telemetry), self-reported play, gaming disorder symptoms (GDT, wave 1), life satisfaction, and perceived gaming value. Session length is based on Xbox and Nintendo data only (Steam provides hourly aggregates, not individual sessions). Dots show individual participants; lines connect group means."
 #| code-summary: "Show code (distribution raincloud plots)"
-#| fig-width: 8
-#| fig-asp: 0.75
+#| fig-width: 10
+#| fig-asp: 0.6
 
-# Total telemetry hours in the ±91-day window
+# Telemetry hours per week: total minutes in the 91-day post-intake window
+# divided by 13 (91 / 7) to give a comparable weekly rate across participants.
 telemetry_hrs <- hourly_telemetry |>
   inner_join(dat_matched |> distinct(pid, neet), by = "pid") |>
   group_by(pid, neet) |>
-  summarise(value = sum(minutes, na.rm = TRUE) / 60, .groups = "drop") |>
-  mutate(variable = "Telemetry playtime (hours)")
+  summarise(value = sum(minutes, na.rm = TRUE) / 60 / 13, .groups = "drop") |>
+  mutate(variable = "Telemetry playtime (hrs/wk)")
 
 # Helper: biweekly data for matched participants with neet status attached.
 # Using biweekly directly (rather than dat_matched) avoids column-name conflicts
@@ -709,14 +716,32 @@ bw_matched <- biweekly |>
   filter(pid %in% matched_pids) |>
   left_join(dat_matched |> distinct(pid, neet), by = "pid")
 
-# Self-reported biweekly play: mean across waves, minutes → hours
+# Self-reported biweekly play: mean across waves, convert minutes → hrs/week
 self_rep <- bw_matched |>
   group_by(pid, neet) |>
   summarise(
-    value = mean(self_reported_biweekly_play, na.rm = TRUE) / 60,
+    value = mean(self_reported_biweekly_play, na.rm = TRUE) / 60 / 2,
     .groups = "drop"
   ) |>
-  mutate(variable = "Self-reported play (hrs / 2 wks)")
+  mutate(variable = "Self-reported play (hrs/wk)")
+
+# Mean session length per person (Xbox and Nintendo only; Steam lacks session data).
+# Apply the same post-intake 91-day restriction used for hourly_telemetry.
+session_intake <- intake |>
+  select(pid, intake_date = date) |>
+  mutate(pid = as.character(pid))
+
+session_len <- sessions_telemetry |>
+  filter(platform %in% c("Xbox", "Nintendo")) |>
+  inner_join(dat_matched |> distinct(pid, neet), by = "pid") |>
+  left_join(session_intake, by = "pid") |>
+  filter(
+    as.numeric(difftime(as.Date(start_local), intake_date, units = "days")) >= 0,
+    as.numeric(difftime(as.Date(start_local), intake_date, units = "days")) <= 91
+  ) |>
+  group_by(pid, neet) |>
+  summarise(value = mean(duration_min, na.rm = TRUE), .groups = "drop") |>
+  mutate(variable = "Session length (Xbox/Nintendo, min)")
 
 # GDT mean at wave 1: recode text responses to numeric 1–5 then average items
 gdt_levels <- c(
@@ -758,6 +783,7 @@ gv_routines <- bw_matched |>
 plot_data <- bind_rows(
   telemetry_hrs,
   self_rep,
+  session_len,
   gdt,
   life_sat_dat,
   gv_work,
@@ -769,8 +795,9 @@ plot_data <- bind_rows(
     variable = factor(
       variable,
       levels = c(
-        "Telemetry playtime (hours)",
-        "Self-reported play (hrs / 2 wks)",
+        "Telemetry playtime (hrs/wk)",
+        "Self-reported play (hrs/wk)",
+        "Session length (Xbox/Nintendo, min)",
         "GDT mean (wave 1, 1\u20135)",
         "Life satisfaction (0\u201310)",
         "Gaming value: work (\u22123\u20133)",
