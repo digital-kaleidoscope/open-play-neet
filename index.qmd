@@ -1,6 +1,6 @@
 ---
 title: |
-  Multi-platform Trace Data Reveal Demographic Differences in Video Game Play, but Individuals Vary Far More
+  TODO
 author:
   - name: Nick Ballou
     corresponding: true
@@ -24,7 +24,7 @@ affiliations:
     city: London
     country: United Kingdom
 abstract: |
-  Most knowledge about "who plays (what) video games" comes from surveys subject to recall bias and social desirability effects. Using publicly available behavioral logs from Steam, Xbox, and Nintendo spanning 1.5 million hours from 3768 US and UK adults (18--40 years old), I present a visualization-driven descriptive analysis of how play patterns differ according to age, gender, ethnicity, and neurodiversity. Results uncover a variety of trends that have rarely been observed in public data: among others, that older players' peak playtime occurs approximately 1 hour earlier in the day, that women tend to re-engage with the same game for a longer time period, and that sports games were more popular among Black, Asian, and neurotypical players than among other ethnic groups and neurodiverse players. Despite intriguing group-level trends, however, within-group variation is far larger: demographic characteristics account for at most 5.4% of gameplay behavioral variation. This work provides an empirically grounded complement to survey research and motivates future investigation into the structural and cultural factors shaping play behavior.
+ TODO
 bibliography: references.bib
 keywords:
   - video games
@@ -71,7 +71,7 @@ format:
         href: https://zenodo.org/records/17609160
         icon: link
   preprint-typst:
-    output-file: index-typst.pdf
+    output-file: index.pdf
     echo: false
     wordcount: true
     theme: jou
@@ -97,6 +97,7 @@ library(patchwork)
 library(cowplot)
 library(tinytable)
 library(effectsize)
+library(MatchIt)
 ```
 
 ```{r}
@@ -122,62 +123,13 @@ theme_update(
   )
 )
 
-# Color codebook for consistent theming across all figures
-# Each demographic dimension uses a single-hue gradient for easy visual grouping
-# Lightest colors are still dark enough to be visible on white backgrounds
-
-# Age: Blues (light to dark with age)
-colors_age <- c(
-  "18-24" = "#9ECAE1",
-  "25-30" = "#4292C6",
-  "31-35" = "#2171B5",
-  "36-40" = "#084594"
-)
-
-# Gender: Oranges/reds
-colors_gender <- c(
-  "Man" = "#FD8D3C",
-  "Woman" = "#D94801",
-  "Non-binary" = "#7F2704"
-)
-
-# Ethnicity: Greens
-colors_ethnicity <- c(
-  "Asian" = "#74C476",
-  "Black" = "#31A354",
-  "Multiple" = "#006D2C",
-  "Other" = "#00441B",
-  "White" = "#002910"
-)
-
-# Neurodiversity: Purples
-colors_neuro <- c(
-  "Neurotypical" = "#9E9AC8",
-  "ADHD" = "#756BB1",
-  "ASD" = "#54278F"
-)
-
-# Combined list for easy access
-demo_colors <- list(
-  Age = colors_age,
-  Gender = colors_gender,
-  Ethnicity = colors_ethnicity,
-  Neurodiversity = colors_neuro
-)
-
-# Helper function to get colors for a demographic dimension
-get_demo_colors <- function(demographic) {
-  demo_colors[[demographic]]
-}
-
 # Load helper functions
 source("R/helpers.R")
 ```
 
 ```{r}
 #| label: load-data
-#| code-summary: "Show code (Download and load raw data from Zenodo)"
-# Download open-play v1.2.1 from Zenodo (cached locally after first download)
+#| code-summary: "Show code (Download and load raw data files)"
 zenodo_url <- "https://zenodo.org/records/20119134/files/digital-wellbeing/open-play-v1.2.1.zip?download=1"
 zip_path <- "data/open-play-v1.2.1.zip"
 
@@ -221,10 +173,22 @@ intake <- read_csv(
   file.path(extract_dir, "data/clean/survey_intake.csv.gz"),
   guess_max = 10000
 )
+
+biweekly <- readr::read_csv(
+  file.path(extract_dir, "data/clean/survey_biweekly.csv.gz"),
+  guess_max = 10000
+)
+
 surveys <- read_csv(
   file.path(extract_dir, "data/clean/survey_daily.csv.gz")
 ) |>
   filter(pid %in% intake$pid)
+
+biweekly <- read_csv(
+  file.path(extract_dir, "data/clean/survey_biweekly.csv.gz"),
+  guess_max = 10000
+)
+
 xbox <- read_csv(file.path(extract_dir, "data/clean/xbox.csv.gz"))
 nintendo <- read_csv(file.path(extract_dir, "data/clean/nintendo.csv.gz"))
 steam <- read_csv(
@@ -294,7 +258,8 @@ if (file.exists(cache_file)) {
       !is.na(session_start),
       !is.na(session_end),
       session_end > session_start,
-      duration_min >= 1
+      duration_min >= 1,
+      title_id != "Wallpaper Engine" # not a game, but a desktop customization tool
     )
 
   # ---------------------------------------------------------------------------
@@ -356,6 +321,23 @@ if (file.exists(cache_file)) {
 
   hourly_telemetry <- bind_rows(hourly_from_sessions, hourly_from_steam)
 
+  # Restrict each participant's data to ±3 months (91 days) of their intake survey date
+  intake_window <- intake |>
+    select(pid, intake_date = date) |>
+    mutate(pid = as.character(pid))
+
+  hourly_telemetry <- hourly_telemetry |>
+    left_join(intake_window, by = "pid") |>
+    filter(
+      abs(as.numeric(difftime(
+        as.Date(hour_start_local),
+        intake_date,
+        units = "days"
+      ))) <=
+        91
+    ) |>
+    select(-intake_date)
+
   # ---------------------------------------------------------------------------
   # DAILY (aggregated from hourly)
   # ---------------------------------------------------------------------------
@@ -406,22 +388,13 @@ if (file.exists(cache_file)) {
 }
 ```
 
-
 ```{r}
-#| label: prepare-demographics
-#| code-summary: "Show code (Prepare demographic variables for analysis)"
-# Clean and collapse demographic variables
-demographics <- intake |>
+#| label: prepare-neet
+#| code-summary: "Show code (Prepare NEET variables for analysis)"
+
+dat <- intake |>
   mutate(
-    pid = as.character(pid),
-    # Age bins
-    age_group = cut(
-      age,
-      breaks = c(17, 24, 30, 35, 40),
-      labels = c("18-24", "25-30", "31-35", "36-40")
-    ),
-    # Gender: collapse to Man / Woman / Non-binary or other
-    gender_clean = case_when(
+    gender = case_when(
       gender %in% c("Man", "Male") ~ "Man",
       gender %in% c("Woman", "Female") ~ "Woman",
       gender == "Prefer not to say" ~ NA_character_,
@@ -429,7 +402,7 @@ demographics <- intake |>
       TRUE ~ "Non-binary"
     ),
     # Ethnicity: harmonize UK/US categories
-    ethnicity_clean = case_when(
+    ethnicity = case_when(
       ethnicity %in% c("White", "White alone") ~ "White",
       ethnicity %in%
         c(
@@ -449,1665 +422,353 @@ demographics <- intake |>
       is.na(ethnicity) ~ NA_character_,
       TRUE ~ "Other"
     ),
-    # Neurodiversity: specific categories (identified or diagnosed)
-    is_neurotypical = neuro_identify == "No",
-    is_adhd = !is.na(neuro_iden_adhd) | !is.na(neuro_diag_adhd),
-    is_autism = !is.na(neuro_iden_asd) | !is.na(neuro_diag_asd)
+    unspecified_unemployed = tolower(employment) %in%
+      c(
+        "unemployed but looking",
+        "unemployed looking for work",
+        "not currently employed",
+        "working occasionally for a fast-food delivery service, but otherwise unemployed",
+        "was working till start of april",
+        "unemployment",
+        "unable to work.",
+        "unable to work",
+        "no",
+        "looking for work",
+        "looking for employment",
+        "looking for a job.",
+        "looking for a job.",
+        "still looking for part-time job",
+        "seeking employment, but not currently employed",
+        "don't work",
+        "actively looking for work"
+      ),
+
+    full_time_caretaker = tolower(employment) %in%
+      c(
+        "unpaid carer",
+        "i am not able tow ork as ihave autistic children i may ahve to go to school for any time so i am their fulltime care giver",
+        "full-time unpaid carer",
+        "full time unpaid carer",
+        "full time carer for other household member",
+        "full time carer for disabled partner",
+        "full time carer",
+        "family carer",
+        "family caregiver",
+        "carer for parent",
+        "carer",
+        "carer for my autistic child and have disability myself",
+        "caregiver",
+        "a homemaker or stay-at-home parent"
+      ),
+
+    disabled = tolower(employment) %in%
+      c(
+        "ssdi",
+        "ssi",
+        "registered disabled",
+        "workers comp",
+        "unemployed/sick/disabled",
+        "unemployed disabled",
+        "temporarily off work due to disability",
+        "unable to work due to disability",
+        "unable to work disabled",
+        "unable to work due to ongoing condition",
+        "i am unable to work due to ill health",
+        "i am unable to work due to health issues",
+        "long term sickness",
+        "longterm sickness",
+        "long term sick leave",
+        "long term sick",
+        "long term illness",
+        "legally disabled/unable to work",
+        "not working due to health reasons",
+        "not currently working due to health issues",
+        "non working due to disability",
+        "disabled/unable to work.",
+        "disabled/unable to work",
+        "disabled/sick",
+        "disabled/ unable to work",
+        "disabled unemployed",
+        "disabled unable to work",
+        "disabled unable to work.",
+        "disabled on benefits",
+        "disabled and unable to work",
+        "disabled and unemployed",
+        "disabled and not currently employed",
+        "disabled and chronic illness",
+        "disabled",
+        "disability",
+        "disability benefits",
+        "disable",
+        "disabed",
+        "chronically ill"
+      ),
   ) |>
-  select(
-    pid,
-    country,
-    age,
-    age_group,
-    gender = gender_clean,
-    ethnicity = ethnicity_clean,
-    is_neurotypical,
-    is_adhd,
-    is_autism
-  )
-
-# Aggregate weekly playtime to person-level (mean weekly hours across all weeks)
-person_playtime <- weekly_telemetry |>
-  group_by(pid) |>
-  summarise(
-    weekly_hours = mean(minutes, na.rm = TRUE) / 60,
-    total_hours = sum(minutes, na.rm = TRUE) / 60,
-    n_weeks_observed = n(),
-    .groups = "drop"
-  )
-
-# Join demographics to playtime
-person_data <- person_playtime |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group)) # Keep only participants with demographics
-
-# Create long-form dataset for faceted plotting
-# Each row = one person × one demographic dimension
-
-# First, create long form for age/gender/ethnicity
-demo_long_basic <- person_data |>
-  pivot_longer(
-    cols = c(age_group, gender, ethnicity),
-    names_to = "demographic",
-    values_to = "group"
-  ) |>
-  filter(!is.na(group)) |>
-  select(pid, weekly_hours, total_hours, n_weeks_observed, demographic, group)
-
-# Create long form for neurodiversity (people can appear in multiple categories)
-demo_long_neuro <- person_data |>
-  pivot_longer(
-    cols = c(is_neurotypical, is_adhd, is_autism),
-    names_to = "neuro_type",
-    values_to = "has_condition"
-  ) |>
-  filter(has_condition == TRUE) |>
   mutate(
-    demographic = "neurodiversity",
-    group = case_when(
-      neuro_type == "is_neurotypical" ~ "Neurotypical",
-      neuro_type == "is_adhd" ~ "ADHD",
-      neuro_type == "is_autism" ~ "ASD"
-    )
-  ) |>
-  select(pid, weekly_hours, total_hours, n_weeks_observed, demographic, group)
-
-# Combine and set factor levels for display order
-person_data_long <- bind_rows(demo_long_basic, demo_long_neuro) |>
-  mutate(
-    demographic = factor(
-      demographic,
-      levels = c("age_group", "gender", "ethnicity", "neurodiversity"),
-      labels = c("Age", "Gender", "Ethnicity", "Neurodiversity")
-    )
+    neet = (unspecified_unemployed | full_time_caretaker | disabled) & age <= 25
   )
-
-pids_with_telemetry <- daily_telemetry |> distinct(pid) |> pull(pid)
-
-analytic_sample <- demographics |>
-  filter(pid %in% pids_with_telemetry, !is.na(age_group))
 ```
+
+```{r}
+#| label: prepare-matching
+#| code-summary: "Show code (1:1 propensity score matching of NEET to non-NEET participants)"
+#| output: false
+
+# Match each NEET participant to one non-NEET participant with similar age,
+# gender, ethnicity, and country using nearest-neighbor PSM (logistic propensity model).
+match_input <- dat |>
+  filter(
+    qualified,
+    !is.na(age),
+    !is.na(gender),
+    !is.na(ethnicity),
+    !is.na(country)
+  )
+
+m_out <- matchit(
+  neet ~ age + gender + ethnicity + country,
+  data = match_input,
+  method = "nearest",
+  distance = "glm",
+  ratio = 1,
+  replace = FALSE
+)
+
+summary(m_out, un = FALSE)
+
+matched_pids <- match.data(m_out)$pid
+dat_matched <- dat |> filter(pid %in% matched_pids)
+```
+
 
 # Introduction
 
-"It is in playing and only in playing that the individual child or adult is able to be creative and to use the whole personality, and it is only in being creative that the individual discovers the self" [@Winnicott1971Playing, p. 54]
-
-In few domains is Winnicott's assessment more directly observable than in video games, played by billions worldwide across every possible combination of demographic groups such as age, gender, ethnicity, and neurodiversity. A substantial body of theory predicts that these demographic characteristics relate to play behavior. Motivational accounts, leisure-constraints research, role-incompatibility models, representation theory, and neurodiversity research each generate directional predictions about how volume, timing, genre, and social play should vary across demographic groups. In turn, these demographic variables are routinely used throughout video games research and practice: as moderators of outcomes ranging from technology acceptance to game preferences [@HarnadiEtAl2025Role; @ZhangEtAl2021Gamification; @Gonzalez-GonzalezEtAl2022Gender; @KordyakaEtAl2023Gender], as predictors of player types and problematic gaming [@Liu2016Understanding; @SantosEtAl2025Relationship; @Lopez-FernandezEtAl2019Female], and as guides for targeting and design decisions [@GerlingEtAl2012Game; @KaufmanEtAl2019Not].
-
-Yet there is also broad agreement that demographic categories are relatively weak predictors of behavior [@zotero-item-16756; @YinEtAl2025Modeling]. Variables such as player motivations, preferences, situational constraints, and prior behavior generally explain substantially more variation than age, gender, or ethnicity. In this sense, the field has largely moved beyond strong demographic determinism.
-
-The problem is that this consensus rests on surprisingly limited evidence. A predictor can be weak on average while still carrying meaningful information in particular behavioral domains, for particular groups, or at particular levels of analysis. However, existing evidence provides little basis for determining where demographic differences are practically consequential and where they are negligible [@VornhagenEtAl2020Statisticala; @Kirk1996Practical]. Most available evidence relies on self-report data with well-understood limitations [e.g., @ParryEtAl2021systematic; @ChoiEtAl2023Logs; @KahnEtAl2014why], highly aggregated industry statistics [e.g., @EntertainmentSoftwareAssociation20252025], and/or homogenous samples [e.g., @LarrieuEtAl2023How]. As a result, demographic characteristics are often treated simultaneously as important enough to include in theories, models, and design decisions, yet insufficiently informative to warrant close scrutiny.
-
-One of the principal reasons for this ambiguity is the lack of fine-grained behavioral data from diverse populations. Opportunities to observe how people actually play—at scale, across platforms, and across the demographic breadth implicated by existing theories—have largely been restricted to private industry datasets. Consequently, the field has been unable to characterize the size, distribution, and practical significance of demographic differences with much precision. The key question is therefore not whether demographics matter more than psychographics or behavior, but rather what the demographic signal that does exist actually looks like when observed directly.
-
-Digital trace data, defined as behavioral logs automatically collected by digital devices and online platforms, offers a complementary lens [@Freelon2014Interpretation; @StierEtAl2020Integrating]. By observing play directly, trace data sidesteps the recall bias and social desirability effects inherent in self-report, while capturing dimensions of play (such as hour-by-hour temporal patterns or engagement span across titles) that surveys cannot feasibly measure. 
-
-This study does not relitigate whether demographic or psychographic segmentation better predicts play; that comparison is not in dispute. It asks instead what the demographic signal that does exist looks like in naturalistic, multi-platform behaviour: where it is concentrated, how large it is relative to within-group variation, and how far the resulting group-level differences license claims about individuals. By leveraging the Open Play dataset [@BallouEtAl2025Open], a public dataset of `r nrow(analytic_sample)` quasi-representative US and UK 18-40 year olds with digital trace data from five gaming platforms (Xbox, Nintendo Switch, Steam, iOS and Android), the current study:
-
-- (1) provides behavioural estimates of demographic differences that are not subject to the self-report biases of prior survey-based work, and 
-- (2) quantifies between-group differences against within-group heterogeneity and distributional overlap, showing that even where group differences are present, individual play is poorly predicted by demographic category.
-
-# Available evidence on demographic differences in play
-
-## Who plays games at all?
-
-Frequent reports, often industry-led, document the changing demographics of people who play games. In the US, players are now almost equally split by gender, are slightly more likely to be white compared to national averages, and 28% are over age 50 [@EntertainmentSoftwareAssociation20252025], illustrating the durability of gaming across the lifespan. Among teenagers, the demographics most likely to play are early adolescents (13–14), boys, Black youth, and those from lower-income households [@GottfriedSidoti2024Teens]. Among US adolescents with mental health difficulties, gaming was relatively popular among Black females and Asian males [@CarsonEtAl2012Racial].
-
-These contemporary findings contrast with early work characterizing video game players as predominantly male, competitive, and academically high-performing [@McClureMears1984Video; @McClure1985Age], a portrait that reflected both the demographics of early gaming and the narrow samples used to study them. More recent work has demonstrated the value of large-scale open data for illuminating within- and between-group heterogeneity, as in the case of board game preferences [@CrossEtAl2023Your].
-
-By contrast, the focus of the current work is not who does or does not play games, which would require a different approach foregrounding nationally representative sampling, but rather how play patterns differ among those who do.
-
-## How do demographic characteristics relate to play behavior? 
-
-Equally interesting is not who plays games at all, but how, among video game players, subgroups differ. Complementing a large body of work on player types and motivations [@Yee2006motivations; @HughesCairns2020Player], a range of studies have examined how demographic characteristics relate to specific dimensions of play.
-
-### Age
-
-Age, gender, and education level have also been weakly linked to player type archetypes such as "achiever" and "disrupter," though they appear unrelated to self-reported play frequency [@SantosEtAl2025Relationship].
-
-Survey-based motivational research established that men and women differ in why they seek out games — men more drawn to competition and achievement, women to social interaction and narrative — and that these motivational profiles shift with age and correlate with genre preferences [@Yee2006motivations; @LucasSherry2004Sex; @PhanEtAl2012Examining]. 
-
-role incompatibility accounts predict gaming volume and timing should shift as adult responsibilities accumulate with age [@ReamEtAl2013Trends]
-
-Industry data similarly indicate that older players (Gen X and above) gravitate toward 'Skill & Chance' games and away from action titles, compared to younger cohorts [@EntertainmentSoftwareAssociation20252025].
-
-### Ethnicity
-
-representation research raises the possibility that genre preferences vary by ethnicity, given the persistent overrepresentation of White male protagonists and the concentration of Black and Latino characters in sports titles  [@WilliamsEtAl2009virtual; @JonesEtAl2025virtual].
-
-### Gender
-
-Leisure constraints research suggests women's play should be more temporally fragmented due to differential discretionary time [@WinnHeeter2009Gaming]
-
-With regard to genre preferences, survey research has found that male gamers are more likely to play Strategy, Role Playing, Action, and Fighting genres, whereas female gamers are more likely to play Social, Puzzle/Card, Music/Dance, and Simulation games [@PhanEtAl2012Examining; @TondelloNacke2019player].
-
-A smaller number of studies have used behavioral trace data rather than self-report, and their findings sometimes diverge from survey-based accounts. Early analyses of EverQuest II trace data found that playtime did not differ by ethnic background, religious affiliation, or income [@WilliamsEtAl2008Who], but that women played approximately 15% more hours per week than men, were more motivated by social factors, and were more likely to under-report their playtime relative to logged data [@WilliamsEtAl2009Looking]. An analysis of League of Legends data showed that women had fewer matches played but accrued skill at the same rate, and were more likely to play support roles [@RatanEtAl2015Stand]. 
-
-
-Platform choice also varies: teenage boys are more likely to play on console, while smartphones and tablets make up a larger share of teenage girls' play [@GottfriedSidoti2024Teens].
-
-Beyond games, analyses of time-use diaries have shown that time spent playing video games is highly sensitive to total available leisure time for younger men, but not for younger women or older men [@AguiarEtAl2017Leisure].
-
-### Neurodiversity
-
-For neurodiverse players, hyperfocus accounts predict longer, harder-to-interrupt sessions among those with ADHD, while special interest and sensory profiles suggest genre concentration among autistic players [@MazurekEtAl2015Video; @MillingtonEtAl2022Brief]
-
-Studies of neurodiverse players have found a preference for RPGs among adults with autism [@MazurekEtAl2015Video], as well as higher motivations for escapism, completionism, and customisation [@MillingtonEtAl2022Brief]. Adolescents with ADHD tend to have higher playtime and problematic gaming [@IsornaFolgarEtAl2024Evaluation]. 
-
-Researchers have criticized the games HCI literature on neurodiversity for being prescriptive or focusing on "cures" rather than understanding the diversity of play experiences and preferences among neurodiverse players, and specifically call for more comparisons between neurotypical and neurodiverse behavioral patterns [@SpielGerling2021Purpose].
-
-## Present Study
-
-Taken together, the existing literature provides a partial but fragmented picture. Most findings derive from single platforms or single games, rely on self-report, or lack demographic diversity. The present study aims to complement this body of work by examining demographic variation in play across multiple platforms using observed behavioral data from a diverse sample, and by quantifying how much heterogeneity in play patterns is accounted for within vs between groups.
-
-The present study thus attempts to improve our understanding of demographic differences in play behavior using the Open Play dataset [@BallouEtAl2025Open]. The Open Play dataset is a publicly available dataset of Analyses are guided by two research questions: 
-
-*RQ1:* How do the volume, composition, and temporal distribution of observed play vary across age, gender, ethnicity, and neurodiversity in this dataset?
-
-*RQ2:* How much of the total variation in play behavior is attributable to between-group demographic differences versus within-group individual differences?
-
-It is vital to be clear about what the study does not aim to do. Results here should be treated as pattern discovery and fodder for hypothesis generation, rather than population inference. I do not conduct statistical tests, and the present dataset is neither representative of the general population (who vary tremendously in their propensity to play games) nor of the gaming population (whose demographics remain only loosely understood, and who themselves vary in willingness to participate or share data). Nonetheless, the diversity present in the sample and the breadth of trace data allows for a more detailed look at naturalistic gaming behavior than available in many contemporary studies. Further, the data do not support claims of inherent preferences, or shed light on mechanisms---observed behavioral patterns may reflect structural, cultural, platform-level, or other factors. 
-
-# Method
+## Top games
 
 ```{r}
-#| label: telemetry-date-ranges
-#| code-summary: "Show code (Calculate telemetry date ranges by platform)"
-# Calculate date range for each platform's telemetry
-platform_ranges <- daily_telemetry |>
-  group_by(platform) |>
-  summarise(
-    min_date = min(day_local, na.rm = TRUE),
-    max_date = max(day_local, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  mutate(
-    range_text = glue(
-      "{format(min_date, '%b %Y')} to {format(max_date, '%b %Y')}"
-    )
+#| label: top-games
+
+neet_totals <- dat_matched |>
+  group_by(neet) |>
+  summarise(total_players = n_distinct(pid))
+
+# Derive genre, subgenre, and multiplayer labels from game metadata.
+# games$original_name covers all platforms: game names for Steam/Nintendo, UUIDs for Xbox.
+# IGDB data takes priority; Xbox-specific columns fill in where IGDB is missing.
+game_meta <- games |>
+  distinct(original_name, .keep_all = TRUE) |>
+  transmute(
+    title_id = original_name,
+    genre = coalesce(str_extract(genres, "^[^,]+"), xbox_primary_genre),
+    subgenre = coalesce(
+      str_extract(str_remove(genres, "^[^,]+,\\s*"), "^[^,]+"),
+      xbox_subgenre
+    ),
+    multiplayer = game_modes
   )
 
-# Format as a single inline-ready string
-telemetry_range_sentence <- platform_ranges |>
-  mutate(platform_range = glue("{platform} ({range_text})")) |>
-  pull(platform_range) |>
-  paste(collapse = ", ")
-
-# Calculate intake survey date range
-intake_range <- intake |>
+# Use distinct(pid, neet) so each participant contributes one row to the join,
+# avoiding inflation of play time by the number of biweekly survey responses.
+top_games <- dat_matched |>
+  distinct(pid, neet) |>
+  left_join(hourly_telemetry, by = "pid") |>
+  group_by(neet, title_id) |>
   summarise(
-    min_date = min(date, na.rm = TRUE),
-    max_date = max(date, na.rm = TRUE)
-  )
-
-intake_range_sentence <- glue(
-  "{format(intake_range$min_date, '%b %Y')} and {format(intake_range$max_date, '%b %Y')}"
-)
-
-games_per_player <- hourly_telemetry |>
-  group_by(pid) |>
-  summarise(
-    n_games = length(unique(title_id))
-  ) |>
-  pull(n_games) |>
-  mean() |>
-  round(1)
-```
-
-The data for this study comprise a subset of the data from the Open Play study [@BallouEtAl2025Open], version 1.2.1. In that study, participants provided access to automated records of their gaming history on one or more platforms (Xbox, Steam, Nintendo Switch, iOS, Android; Xbox is included for US participants only) and completed an intake survey followed by daily and biweekly surveys. The present study uses only the digital trace data from console and PC and demographic data from the intake survey, and does not include daily or biweekly survey data or mobile data (due to lower granularity compared to other trace data streams). Intake surveys were completed between `r intake_range_sentence`. Digital trace data span the following periods: `r telemetry_range_sentence`.
-
-Participants were recruited in collaboration with two panel providers, Prolific and PureProfile. Participants were eligible if they were aged 18 or older, resided in the United States or United Kingdom, self-reported playing video games for at least 1 hour per week with at least 50% of their play happening on eligible platforms (Nintendo, Xbox, and Steam), and successfully linked at least one gaming account on Xbox, Steam, and/or Nintendo Switch with validated recent digital trace data. 
-
-The procedure for linking gameplay data differed per platform: Steam was collected through a custom platform developed for research purposes, while Xbox and Nintendo data were collected via non-financial data-sharing agreements with the platform owners. An overview of the procedure from the participant perspective is shown in Appendix @tbl-platforms, while full details of the recruitment procedures and study methodology are available in [@BallouEtAl2025Open].
-
-All data and analysis code are available on [repository link removed for anonymous review].
-<!-- Zenodo ({{< meta data-url >}}). -->
-
-## Representativeness 
-
-Participants in the initial screening sample were quasi-representative; the first N (X%) participants were recruited under quotas ensuring that those screened were approximately nationally representative according to age, gender, and ethnicity. Due to difficulty meeting recruitment targets, the latter N (X%) were recruited using convenience sampling. 
-
-The analytic sample is inherently non-representative of the general population, as both prevalence of gaming (i.e., likelihood of qualifying for the study) and willingness to participate in the intensive study differed across demographic groups in the screening sample. Nonetheless, the analytic sample consists of a diverse sample across gender and ethnicity. 
-
-We do not weight the sample to match national demographics, as the goal of this study is not to estimate population-level prevalence or make claims about the general population; nor do we weight it to match the gaming population, as the demographics of that population are not well understood. Instead, we treat the sample as a diverse convenience sample, and focus on describing patterns of play within this sample.
-
-## Participants
-
-A description of the sample is shown in @tbl-participants. Overall, the sample is comparable to the general population in terms of ethnicity and non-binary gender, but has more men than women. 
-
-Particularly noteworthy is the neurodiversity of the sample: 23.8% of participants reported having an ADHD diagnosis, and 16.8% of participants reported having an autism spectrum disorder diagnosis (with 7.4% reporting both)---both far above national averages [see e.g., estimates that 6.0% of US adults have ADHD @StaleyEtAl2024AttentionDeficit; and 2.2% of US adults have autism @DietzEtAl2020National]. While such high neurodiversity prevalence limits the generalizability of full-sample analyses, having this degree of diversity present in the sample allows for a more nuanced look at how play patterns vary across different neurotypes, rather than treating neurodivergent players as a monolithic group.
-
-```{r}
-#| label: tbl-participants
-#| tbl-cap: "Participant characteristics by country"
-#| code-summary: "Show code (Create demographics summary table)"
-# Analytic sample: participants with trace data who have demographic info
-
-# Sample sizes by country
-n_total <- nrow(analytic_sample)
-n_us <- sum(analytic_sample$country == "US")
-n_uk <- sum(analytic_sample$country == "UK")
-
-# Build the table
-summary_table <- bind_rows(
-  # Sample size
-  make_table_row(
-    "**N**",
-    as.character(n_total),
-    as.character(n_us),
-    as.character(n_uk)
-  ),
-
-  # Age
-  make_table_row(
-    "Age (years)",
-    format_mean_sd(analytic_sample$age),
-    format_mean_sd(analytic_sample$age[analytic_sample$country == "US"]),
-    format_mean_sd(analytic_sample$age[analytic_sample$country == "UK"])
-  ),
-
-  # Gender
-  make_demo_rows(
-    analytic_sample,
-    "gender",
-    "Gender",
-    c("Man", "Woman", "Non-binary"),
-    n_total,
-    n_us,
-    n_uk
-  ),
-
-  # Ethnicity
-  make_demo_rows(
-    analytic_sample,
-    "ethnicity",
-    "Ethnicity",
-    c("White", "Asian", "Black", "Multiple", "Other"),
-    n_total,
-    n_us,
-    n_uk
-  ),
-
-  # Neurodiversity (non-exclusive, requires manual handling)
-  make_table_row("**Neurodiversity**", "", "", ""),
-  {
-    n_tot <- sum(analytic_sample$is_neurotypical, na.rm = TRUE)
-    n_us_val <- sum(
-      analytic_sample$is_neurotypical & analytic_sample$country == "US",
-      na.rm = TRUE
-    )
-    n_uk_val <- sum(
-      analytic_sample$is_neurotypical & analytic_sample$country == "UK",
-      na.rm = TRUE
-    )
-    make_table_row(
-      "    Neurotypical",
-      format_n_pct(n_tot, n_total),
-      format_n_pct(n_us_val, n_us),
-      format_n_pct(n_uk_val, n_uk)
-    )
-  },
-  {
-    n_tot <- sum(analytic_sample$is_adhd, na.rm = TRUE)
-    n_us_val <- sum(
-      analytic_sample$is_adhd & analytic_sample$country == "US",
-      na.rm = TRUE
-    )
-    n_uk_val <- sum(
-      analytic_sample$is_adhd & analytic_sample$country == "UK",
-      na.rm = TRUE
-    )
-    make_table_row(
-      "    ADHD",
-      format_n_pct(n_tot, n_total),
-      format_n_pct(n_us_val, n_us),
-      format_n_pct(n_uk_val, n_uk)
-    )
-  },
-  {
-    n_tot <- sum(analytic_sample$is_autism, na.rm = TRUE)
-    n_us_val <- sum(
-      analytic_sample$is_autism & analytic_sample$country == "US",
-      na.rm = TRUE
-    )
-    n_uk_val <- sum(
-      analytic_sample$is_autism & analytic_sample$country == "UK",
-      na.rm = TRUE
-    )
-    make_table_row(
-      "    ASD",
-      format_n_pct(n_tot, n_total),
-      format_n_pct(n_us_val, n_us),
-      format_n_pct(n_uk_val, n_uk)
-    )
-  },
-
-  # Platform breakdown
-  make_table_row("**Platform**", "", "", ""),
-  {
-    platform_by_country <- daily_telemetry |>
-      distinct(pid, platform) |>
-      left_join(analytic_sample |> select(pid, country), by = "pid") |>
-      filter(!is.na(country))
-
-    map_dfr(c("Nintendo", "Steam", "Xbox"), function(plat) {
-      n_tot <- platform_by_country |> filter(platform == plat) |> nrow()
-      n_us_val <- platform_by_country |>
-        filter(platform == plat, country == "US") |>
-        nrow()
-      n_uk_val <- platform_by_country |>
-        filter(platform == plat, country == "UK") |>
-        nrow()
-      make_table_row(
-        glue("    {plat}"),
-        format_n_pct(n_tot, n_total),
-        format_n_pct(n_us_val, n_us),
-        format_n_pct(n_uk_val, n_uk)
-      )
-    })
-  }
-)
-
-# Identify rows for styling
-header_rows <- which(str_detect(summary_table$Characteristic, "^\\*\\*"))
-indent_rows <- which(str_detect(summary_table$Characteristic, "^    "))
-
-# Create table
-summary_table |>
-  tt(
-    notes = "Values are M (SD) or N (percent). Neurodiversity categories are non-exclusive."
-  ) |>
-  format_tt(j = 1, markdown = TRUE) |>
-  style_tt(i = header_rows, bold = TRUE) |>
-  format_tt(i = header_rows, j = 1, fn = \(x) str_remove_all(x, "\\*\\*")) |>
-  style_tt(i = indent_rows, j = 1, indent = 1) |>
-  format_tt(i = indent_rows, j = 1, fn = \(x) str_trim(x)) |>
-  style_tt(fontsize = 0.8) |>
-  style_tt(i = 0, bold = TRUE)
-```
-
-## Measures
-
-### Demographic variables
-
-The following demographic variables were measured in the intake survey.
-
-*Age*: Participants entered their age as an integer. Because the multivariate visualizations used here (e.g., radar charts comparing genre profiles) require categorical groupings, continuous age is binned into four groups (18–24, 25–30, 31–35, 36–40) for comparability with the other demographic dimensions.
-
-*Gender*: Participants selected from the following options: Woman, Man, Non-binary, Prefer to specify, and Prefer not to say. For readability, "non-binary" and "prefer to specify" were both coded as "Non-binary".
-
-*Ethnicity*: Response options were drawn from primary census categories in each respective country. US participants selected between White alone; Black or African American alone; American Indian and Alaska Native alone; Asian alone; Native Hawaiian and Other Pacific Islander alone; Some Other Race alone; and Two or More Races. UK participants selected among White; Mixed or multiple ethnic groups; Asian or Asian British; Black, African, Caribbean or Black British; Other ethnic group; Prefer not to say. For simplicity, I harmonized these categories into a smaller set of labels (e.g., "Black or African American alone" and "Black, African, Caribbean or Black British" were both recoded as "Black").
-
-*Neurodiversity*: Participants were asked if they had received a formal diagnosis of neurodiverse conditions from a qualified healthcare professional; if they selected yes, they were provided a list of 12 options. In this paper, I focus solely on players who reported having a diagnosis of either autism spectrum disorder or attention deficit hyperactive disorder, as prevalence of other categories (e.g., dyscalculia) was too small for meaningful analysis. 
-
-### Gaming behavior variables
-
-*Gaming behavior* on Xbox, Steam, and Nintendo Switch was measured via a mix of (a) session-level data provided by Nintendo of America, Nintendo of Europe, and Microsoft; and (b) hourly playtime collected using open source methods built on the Steam API. The exact data-sharing procedure and data collected varied by platform; details are available in Appendix @tbl-platforms, and are described in exhaustive detail in @BallouEtAl2025Open.
-
-Because Xbox titles are replaced with a random identifier instead of the specific game, subsequent analyses in this paper do not focus on particular games, but rather on genres (as this metadata was provided alongside Xbox games). For reference, the most popular 5 non-Xbox games for each demographic group are shown in @tbl-top-games
-
-From the hourly and session-level data, I calculated various summary variables including: total playtime (hours), session count, mean session duration, genre categories (how assigned to titles), title diversity, and hour of day and day of week distributions. These derived variables form the basis of the descriptions to come. 
-
-### Genres
-
-Nintendo and Steam data contain full game titles; to collect game metadata including genres, we used the Internet Games Database (IGDB) API. Xbox data was provided using random identifiers in place of game titles, but with genre labels as seen on the Xbox store. For simplicity, I therefore harmonized IGDB and Xbox genres into a smaller subset of categories (e.g., turn-based strategy, real-time strategy, tactical, MOBA were collapsed into a single "Strategy" category). Full details of the genre mapping are available in the supplementary materials. For the primary genre analysis, each game was assigned to its first listed genre, typically the primary genre; a supplementary multi-genre analysis (Appendix @fig-genre-bar-multi) apportioned playtime equally across all genres a game was tagged with and largely replicated the findings.
-
-### Ethics
-
-This study received ethical approval from [redacted for anonymous peer review]. All participants provided informed consent at the start of the study, including consent to their data being shared openly for reanalysis. 
-
-<!-- Social Sciences and Humanities Inter-Divisional Research Ethics Committee at the University of Oxford (OII_CIA_23_107). -->
-
-Participants were paid at an average rate of £12/hour, equating to: £0.20 for a 1-minute screening, £2 for the 10-minute intake survey (plus £5 for linking at least one account with recent data), £0.80 for each 4-minute daily survey. Participants received a £10 bonus payment for completing at least 24 out of 30 daily surveys.
-
-# Results
-
-Results below first depict the behavioral patterns observed in play volume, engagement patterns and temporal organization, and genre composition, before quantifying total explanatory power.
-
-## Play volume across demographic groups
-
-::: {.place arguments='top, scope: "parent", float: true'}
-```{r}
-#| label: fig-play-volume
-#| fig-cap: "Distribution of play volume metrics across demographic groups. (A) Mean weekly playtime in hours. (B) Total session count (Nintendo + Xbox only; log scale). (C) Median session duration in minutes. Density slabs show the distribution shape; points and intervals show the median and 66%/95% quantile intervals. Distributions show substantial overlap across groups."
-#| code-summary: "Show code (play volume distributions figure)"
-#| fig-env: "figure*"
-#| fig-width: 10
-#| fig-asp: 1.0
-#| out-width: 100%
-# Calculate per-person session metrics from sessions_telemetry (Nintendo + Xbox only)
-person_sessions <- sessions_telemetry |>
-  group_by(pid) |>
-  summarise(
-    n_sessions = n(),
-    median_duration = median(duration_min, na.rm = TRUE),
+    total_minutes = sum(minutes, na.rm = TRUE),
+    n_players = n_distinct(pid),
+    min_per_player = total_minutes / n_players,
     .groups = "drop"
   ) |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group))
+  left_join(neet_totals, by = "neet") |>
+  mutate(pct_players = 100 * (n_players / total_players)) |>
+  left_join(game_meta, by = "title_id")
 
-# Combined color palette
-all_demo_colors <- c(colors_age, colors_gender, colors_ethnicity, colors_neuro)
-
-# Helper to create a single distribution panel
-make_volume_panel <- function(
-  data,
-  x_var,
-  x_label,
-  x_scale = "identity",
-  x_lim = NULL
-) {
-  p <- data |>
-    ggplot(aes(x = .data[[x_var]], y = group, fill = group)) +
-    stat_slabinterval(
-      slab_alpha = 0.7,
-      point_interval = median_qi,
-      interval_color = "black",
-      point_color = "black",
-      point_size = 1.5,
-      scale = 1.2,
-      .width = c(0.66, 0.95)
-    ) +
-    scale_fill_manual(values = all_demo_colors) +
-    facet_wrap(~demographic, scales = "free_y", nrow = 1) +
-    labs(x = x_label, y = NULL) +
-    theme(
-      legend.position = "none",
-      strip.text = element_text(
-        size = 8,
-        color = "white",
-        margin = margin(t = 2, b = 2)
-      ),
-      strip.background = element_rect(fill = "black"),
-      axis.text.y = element_text(size = 8),
-      axis.text.x = element_text(size = 8, angle = 45, hjust = 1),
-      panel.spacing.x = unit(8, "pt"),
-      panel.spacing.y = unit(2, "pt")
-    )
-
-  if (x_scale == "log10") {
-    p <- p + scale_x_log10(labels = scales::comma_format())
-  }
-  if (!is.null(x_lim)) {
-    p <- p + coord_cartesian(xlim = x_lim)
-  }
-  p
+top_10 <- function(data, neet_val) {
+  data |>
+    filter(neet == neet_val, !is.na(title_id)) |>
+    slice_max(n_players, n = 10) |>
+    arrange(desc(n_players)) |>
+    mutate(rank = row_number())
 }
 
-# Panel A: Weekly hours (from person_data_long)
-p_weekly <- make_volume_panel(
-  person_data_long,
-  "weekly_hours",
-  "Mean weekly playtime (hours)",
-  x_lim = c(0, 40)
-)
-
-# Prepare sessions data in long form
-sessions_long_basic <- person_sessions |>
-  pivot_longer(
-    cols = c(age_group, gender, ethnicity),
-    names_to = "demographic",
-    values_to = "group"
+bind_rows(top_10(top_games, TRUE), top_10(top_games, FALSE)) |>
+  select(
+    rank,
+    title_id,
+    n_players,
+    pct_players,
+    total_minutes,
+    min_per_player,
+    genre,
+    subgenre,
+    multiplayer
   ) |>
-  filter(!is.na(group)) |>
-  select(pid, n_sessions, median_duration, demographic, group)
-
-sessions_long_neuro <- person_sessions |>
-  pivot_longer(
-    cols = c(is_neurotypical, is_adhd, is_autism),
-    names_to = "neuro_type",
-    values_to = "has_condition"
+  setNames(c(
+    "Rank",
+    "Game",
+    "Players",
+    "% Players",
+    "Minutes",
+    "Min/Player",
+    "Genre",
+    "Subgenre",
+    "Mode(s)"
+  )) |>
+  tt(
+    digits = 1,
+    caption = "Top 10 games by total play time — matched NEET and non-NEET players"
   ) |>
-  filter(has_condition == TRUE) |>
-  mutate(
-    demographic = "neurodiversity",
-    group = case_when(
-      neuro_type == "is_neurotypical" ~ "Neurotypical",
-      neuro_type == "is_adhd" ~ "ADHD",
-      neuro_type == "is_autism" ~ "ASD"
-    )
-  ) |>
-  select(pid, n_sessions, median_duration, demographic, group)
-
-sessions_long <- bind_rows(sessions_long_basic, sessions_long_neuro) |>
-  mutate(
-    demographic = factor(
-      demographic,
-      levels = c("age_group", "gender", "ethnicity", "neurodiversity"),
-      labels = c("Age", "Gender", "Ethnicity", "Neurodiversity")
-    )
-  )
-
-# Panel B: Session count
-p_sessions <- make_volume_panel(
-  sessions_long,
-  "n_sessions",
-  "Total sessions (log scale)",
-  x_scale = "log10",
-  x_lim = c(10, 5000)
-)
-
-# Panel C: Session duration
-p_duration <- make_volume_panel(
-  sessions_long,
-  "median_duration",
-  "Median session duration (minutes)",
-  x_lim = c(0, 120)
-)
-
-# Combine vertically with A/B/C labels
-(p_weekly / p_sessions / p_duration) +
-  plot_layout(heights = c(1, 1, 1)) +
-  plot_annotation(tag_levels = "A") &
-  theme(
-    plot.tag = element_text(face = "bold", size = 12),
-    plot.margin = margin(2, 2, 2, 2, "pt")
-  )
-```
-:::
-
-```{r}
-#| label: calc-volume-stats
-#| code-summary: "Show code (calculate volume summary statistics)"
-# Gender comparisons (weekly hours)
-gender_hours <- person_data_long |>
-  filter(demographic == "Gender") |>
-  group_by(group) |>
-  summarise(median_hours = median(weekly_hours, na.rm = TRUE), .groups = "drop")
-
-hours_women <- gender_hours |> filter(group == "Woman") |> pull(median_hours)
-hours_men <- gender_hours |> filter(group == "Man") |> pull(median_hours)
-hours_women_fmt <- sprintf("%.1f", hours_women)
-hours_men_fmt <- sprintf("%.1f", hours_men)
-
-# Neurodiversity comparisons (sessions and duration)
-neuro_sessions <- sessions_long |>
-  filter(demographic == "Neurodiversity") |>
-  group_by(group) |>
-  summarise(
-    median_sessions = median(n_sessions, na.rm = TRUE),
-    median_duration = median(median_duration, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-sessions_adhd <- neuro_sessions |>
-  filter(group == "ADHD") |>
-  pull(median_sessions)
-sessions_neurotypical <- neuro_sessions |>
-  filter(group == "Neurotypical") |>
-  pull(median_sessions)
-duration_adhd <- neuro_sessions |>
-  filter(group == "ADHD") |>
-  pull(median_duration)
-duration_neurotypical <- neuro_sessions |>
-  filter(group == "Neurotypical") |>
-  pull(median_duration)
-
-sessions_adhd_fmt <- scales::comma(round(sessions_adhd))
-sessions_neurotypical_fmt <- scales::comma(round(sessions_neurotypical))
-duration_adhd_fmt <- sprintf("%.0f", duration_adhd)
-duration_neurotypical_fmt <- sprintf("%.0f", duration_neurotypical)
+  group_tt(i = list("NEET" = 1, "Non-NEET" = 11))
 ```
 
-@fig-play-volume visualizes the typical weekly playtime (Panel A, top row), total recorded sessions (Panel B, middle row), and typical session duration (Panel C, bottom row) for each group. The heavily overlapping histograms across groups indicate that group differences account for very little variation in playtime: in the sample, most groups showed similar distributions of play volume.
+## Time of day
 
-A few trends nonetheless emerge: women played fewer weekly hours than men (`r hours_women_fmt` vs `r hours_men_fmt` mean hours). There is a small observed difference in the total number of sessions played by participants with ADHD compared to neurotypical players (`r sessions_adhd_fmt` vs `r sessions_neurotypical_fmt`), but no difference in median session duration (`r duration_adhd_fmt` vs `r duration_neurotypical_fmt` minutes). Asian players in the sample had slightly lower playtime and sessions than other ethnic groups.
-
-## Temporal patterns across demographic groups
-
-::: {.place arguments='top, scope: "parent", float: true'}
 ```{r}
-#| label: fig-temporal
-#| fig-cap: "Distribution of play across hours of the day by demographic group. Lines show the proportion of each group's total playtime occurring in each hourly bin (timestamps converted to local time)."
-#| code-summary: "Show code (temporal patterns figure)"
-#| fig-width: 7
-#| fig-asp: 0.786
-#| out-width: 100%
-# Compute hourly playtime proportions for all demographic groups
-hourly_demo <- hourly_telemetry |>
+#| label: fig-time-of-day
+#| fig-cap: "Distribution of play across hours of the day for matched NEET and non-NEET players. Lines show each group's share of total playtime per hourly bin (timestamps in local time)."
+#| code-summary: "Show code (time-of-day figure)"
+
+hourly_neet <- hourly_telemetry |>
+  inner_join(dat_matched |> distinct(pid, neet), by = "pid") |>
   mutate(hour = hour(hour_start_local)) |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group))
-
-# Exclusive demographics
-hourly_long <- hourly_demo |>
-  pivot_longer(
-    cols = c(age_group, gender, ethnicity),
-    names_to = "demographic",
-    values_to = "group"
-  ) |>
-  filter(!is.na(group)) |>
-  select(pid, hour, minutes, demographic, group) |>
-  bind_rows(
-    hourly_demo |>
-      pivot_longer(
-        cols = c(is_neurotypical, is_adhd, is_autism),
-        names_to = "neuro_type",
-        values_to = "has_condition"
-      ) |>
-      filter(has_condition == TRUE) |>
-      mutate(
-        demographic = "neurodiversity",
-        group = case_when(
-          neuro_type == "is_neurotypical" ~ "Neurotypical",
-          neuro_type == "is_adhd" ~ "ADHD",
-          neuro_type == "is_autism" ~ "ASD"
-        )
-      ) |>
-      select(pid, hour, minutes, demographic, group)
-  ) |>
-  mutate(
-    demographic = factor(
-      demographic,
-      levels = c("age_group", "gender", "ethnicity", "neurodiversity"),
-      labels = c("Age", "Gender", "Ethnicity", "Neurodiversity")
-    )
-  ) |>
-  filter(!is.na(demographic))
-
-# Proportion of each group's total playtime per hour
-hourly_props <- hourly_long |>
-  group_by(demographic, group, hour) |>
+  group_by(neet, hour) |>
   summarise(total_minutes = sum(minutes, na.rm = TRUE), .groups = "drop") |>
-  group_by(demographic, group) |>
+  group_by(neet) |>
   mutate(prop = total_minutes / sum(total_minutes)) |>
-  ungroup()
+  ungroup() |>
+  mutate(group = if_else(neet, "NEET", "Non-NEET"))
 
-# Order legend entries by demographic group
-all_demo_colors <- c(colors_age, colors_gender, colors_ethnicity, colors_neuro)
-group_levels <- names(all_demo_colors)
-
-hourly_props <- hourly_props |>
-  mutate(group = factor(group, levels = group_levels))
-
-ggplot(hourly_props, aes(x = hour, y = prop, colour = group, group = group)) +
-  geom_line(linewidth = 0.7, alpha = 0.85) +
+ggplot(hourly_neet, aes(x = hour, y = prop, colour = group)) +
+  geom_line(linewidth = 0.9) +
   scale_x_continuous(
-    breaks = seq(0, 23, by = 3),
+    breaks = seq(0, 21, by = 3),
     labels = c("12am", "3am", "6am", "9am", "12pm", "3pm", "6pm", "9pm")
   ) +
-  scale_y_continuous(labels = scales::percent_format()) +
-  scale_colour_manual(values = all_demo_colors, breaks = group_levels) +
-  facet_wrap(~demographic, nrow = 2) +
-  labs(x = "Hour of day", y = "Share of playtime", colour = NULL) +
-  theme_minimal(base_size = 10) +
-  theme(
-    legend.position = "bottom",
-    legend.text = element_text(size = 8),
-    strip.background = element_rect(fill = "black", colour = "black"),
-    strip.text = element_text(colour = "white", face = "bold", size = 9),
-    panel.border = element_rect(colour = "grey70", fill = NA, linewidth = 0.4),
-    panel.grid.minor = element_blank(),
-    panel.spacing = unit(10, "pt")
+  scale_y_continuous(labels = scales::percent_format(accuracy = 0.1)) +
+  scale_colour_manual(
+    values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8")
   ) +
-  guides(colour = guide_legend(ncol = 4))
-```
-:::
-
-Next, I assessed how the time of play differs across demographic groups in the sample. For each user, I calculated the proportion of total playtime taking place in each of 24 hourly bins, after converting session timestamps to local timezones. @fig-temporal shows the resulting distributions for each demographic variable.
-
-Results show that across all age groups, play peaks in the evening hours, with 9pm being the modal hour for 18--35 year olds. Playtime among 36--40 year-olds shifts slightly earlier, peaking at 8pm. Gender and ethnicity groups show broadly similar temporal distributions, with evening peaks across all groups. Among neurodiversity groups, the distributions are also similar, though ADHD and ASD groups show slightly more concentrated evening peaks.
-
-## Genre composition across demographic groups
-
-```{r}
-#| label: prepare-genre-data
-#| code-summary: "Show code (genre data preparation)"
-# -----------------------------------------------------------------------------
-# PRIMARY GENRE MAPPING (first-listed genre only)
-# -----------------------------------------------------------------------------
-games_genres_primary <- games |>
-  mutate(
-    genre_raw = str_extract(genres, "^[^,]+") |> str_trim(),
-    genre_clean = clean_genre(genre_raw)
-  ) |>
-  filter(!is.na(genre_clean)) |>
-  distinct(original_name, genre_clean)
-
-# -----------------------------------------------------------------------------
-# MULTI-GENRE MAPPING (games assigned to all listed genres, time apportioned)
-# -----------------------------------------------------------------------------
-games_genres_multi <- games |>
-  filter(!is.na(genres)) |>
-  separate_rows(genres, sep = ",\\s*") |>
-  mutate(genre_clean = clean_genre(genres)) |>
-  filter(!is.na(genre_clean)) |>
-  distinct(original_name, genre_clean) |>
-  group_by(original_name) |>
-  mutate(genre_weight = 1 / n()) |>
-  ungroup()
-
-# -----------------------------------------------------------------------------
-# PRIMARY GENRE DATA (for main bar chart)
-# -----------------------------------------------------------------------------
-genre_playtime_primary <- hourly_telemetry |>
-  left_join(games_genres_primary, by = c("title_id" = "original_name")) |>
-  filter(!is.na(genre_clean)) |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group))
-
-genre_by_demo_primary <- genre_playtime_primary |>
-  group_by(
-    pid,
-    genre_clean,
-    age_group,
-    gender,
-    ethnicity,
-    is_neurotypical,
-    is_adhd,
-    is_autism
-  ) |>
-  summarise(minutes = sum(minutes, na.rm = TRUE), .groups = "drop")
-
-# Abbreviate long genre names for display
-abbreviate_genre <- function(x) {
-  case_when(
-    x == "Role-playing (RPG)" ~ "RPG",
-    x == "Simulator" ~ "Simulation",
-    TRUE ~ x
-  )
-}
-
-# Top genres by total playtime (used for both versions)
-top_genres <- genre_by_demo_primary |>
-  group_by(genre_clean) |>
-  summarise(total = sum(minutes), .groups = "drop") |>
-  slice_max(total, n = 8) |>
-  mutate(genre_clean = abbreviate_genre(genre_clean)) |>
-  pull(genre_clean)
-
-# Apply abbreviation to base data before computing proportions
-genre_by_demo_primary <- genre_by_demo_primary |>
-  mutate(genre_clean = abbreviate_genre(genre_clean))
-
-genre_props_primary <- build_genre_props(genre_by_demo_primary)
-
-# Calculate deviation on ALL genres first, then filter for display
-genre_props_dev_primary <- calc_genre_deviation(
-  genre_by_demo_primary,
-  genre_props_primary
-)
-
-genre_props_dev_plot_primary <- genre_props_dev_primary |>
-  filter(genre_clean %in% top_genres) |>
-  mutate(genre_clean = factor(genre_clean, levels = top_genres))
-
-group_ns_primary <- calc_group_ns(genre_by_demo_primary)
-
-# -----------------------------------------------------------------------------
-# MULTI-GENRE DATA (for appendix bar chart)
-# Playtime is apportioned equally across all genres a game belongs to
-# -----------------------------------------------------------------------------
-genre_playtime_multi <- hourly_telemetry |>
-  left_join(
-    games_genres_multi,
-    by = c("title_id" = "original_name"),
-    relationship = "many-to-many"
-  ) |>
-  filter(!is.na(genre_clean)) |>
-  # Apply weight to apportion playtime across genres
-  mutate(minutes_weighted = minutes * genre_weight) |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group))
-
-genre_by_demo_multi <- genre_playtime_multi |>
-  group_by(
-    pid,
-    genre_clean,
-    age_group,
-    gender,
-    ethnicity,
-    is_neurotypical,
-    is_adhd,
-    is_autism
-  ) |>
-  summarise(minutes = sum(minutes_weighted, na.rm = TRUE), .groups = "drop") |>
-  # Apply abbreviation to base data before computing proportions
-  mutate(genre_clean = abbreviate_genre(genre_clean))
-
-genre_props_multi <- build_genre_props(genre_by_demo_multi)
-
-# Calculate deviation on ALL genres first, then filter for display
-# (filtering before deviation calculation breaks leave-one-out math)
-genre_props_dev_multi <- calc_genre_deviation(
-  genre_by_demo_multi,
-  genre_props_multi
-)
-
-genre_props_dev_plot_multi <- genre_props_dev_multi |>
-  filter(genre_clean %in% top_genres) |>
-  mutate(genre_clean = factor(genre_clean, levels = top_genres))
-
-group_ns_multi <- calc_group_ns(genre_by_demo_multi)
-
-# Bootstrap 95% CIs for deviation ratios (resamples both focal and reference groups)
-genre_ci_primary <- bootstrap_genre_ci(genre_by_demo_primary, n_boot = 1000)
-genre_ci_multi <- bootstrap_genre_ci(genre_by_demo_multi, n_boot = 1000)
+  labs(x = "Hour of day", y = "Share of total playtime", colour = NULL) +
+  theme(legend.position = "bottom")
 ```
 
-::: {.place arguments='top, scope: "parent", float: true'}
-```{r}
-#| label: fig-genre-bar
-#| fig-cap: "Genre playtime deviation from leave-one-out reference across demographic groups (primary genre only). Bars show each group's median genre allocation relative to all others in the same demographic dimension: positive values indicate over-representation, negative values indicate under-representation. Error bars show bootstrapped 95% confidence intervals."
-#| code-summary: "Show code (genre deviation bar chart)"
-#| fig-env: "figure*"
-#| fig-width: 10
-#| fig-asp: 1.2
-#| out-width: 100%
-# Flatten per-group colors (unlist adds prefixes like "Age.18-24")
-group_colors <- unlist(demo_colors)
-names(group_colors) <- sub(".*\\.", "", names(group_colors))
-
-build_genre_bar_grid(
-  genre_props_dev_plot_primary,
-  genre_ci_primary,
-  group_ns_primary,
-  group_colors
-)
-```
-:::
+## Distributions
 
 ```{r}
-#| label: calc-genre-count
-#| code-summary: "Show code (count total genres)"
-# Count unique raw genres before simplification
-n_raw_genres <- games |>
-  filter(!is.na(genres)) |>
-  separate_rows(genres, sep = ",\\s*") |>
-  distinct(genres) |>
-  nrow()
-```
+#| label: fig-distributions
+#| fig-cap: "Raincloud plots comparing matched NEET and non-NEET players on objective playtime (telemetry), self-reported play, gaming disorder symptoms (GDT, wave 1), and life satisfaction (mean across waves). Dots show individual participants; boxes show IQR and median; densities show the distribution shape."
+#| code-summary: "Show code (distribution raincloud plots)"
+#| fig-width: 8
+#| fig-asp: 0.75
 
-To visualize differences in genre preferences, I calculated the sum of each user's playtime taking place in each of the 8 genres within the simplified genre taxonomy described in the measure section (raw play proportions for all `r n_raw_genres` genres in the unsimplified data can be found in Appendix @tbl-genre-playtime). 
+# Total telemetry hours in the ±91-day window
+telemetry_hrs <- hourly_telemetry |>
+  inner_join(dat_matched |> distinct(pid, neet), by = "pid") |>
+  group_by(pid, neet) |>
+  summarise(value = sum(minutes, na.rm = TRUE) / 60, .groups = "drop") |>
+  mutate(variable = "Telemetry playtime (hours)")
 
-Results (@fig-genre-bar) visualizes these results. Each demographic group is a panel (demographic variables organized by row). Bars extending to the left from the center indicate that this genre is relatively unpopular among that demographic group compared to the other subgroups (e.g., popular among men compared to women and non-binary participants), whereas bars extending to the right indicate that the genre is relatively popular. 
+# Helper: biweekly data for matched participants with neet status attached.
+# Using biweekly directly (rather than dat_matched) avoids column-name conflicts
+# from the biweekly/intake join, which suffixes shared columns like life_sat to .x/.y.
+bw_matched <- biweekly |>
+  filter(pid %in% matched_pids) |>
+  left_join(dat_matched |> distinct(pid, neet), by = "pid")
 
-A wide variety of observed differences emerge. Among other differences, results in the present sample align with well-documented preferences among men for sports games, and among women for puzzle and simulation games. Asian players in the sample played relatively high amounts of racing, platform, and sports games, whereas White players played slightly more puzzle games than other ethnic groups. Neurodiverse players had slight preference for RPGs compared to neurotypical players, who played more racing games. 
-
-### Social play patterns
-
-```{r}
-#| label: calc-game-modes
-#| code-summary: "Show code (game mode proportions)"
-# Tag each game with competitive multiplayer / cooperative flags
-games_modes <- games |>
-  mutate(
-    is_competitive = str_detect(
-      game_modes,
-      "Multiplayer|Massively Multiplayer Online|Battle Royale"
-    ) &
-      !is.na(game_modes),
-    is_cooperative = str_detect(
-      game_modes,
-      "Co-operative|Split screen"
-    ) &
-      !is.na(game_modes)
-  ) |>
+# Self-reported biweekly play: mean across waves, minutes → hours
+self_rep <- bw_matched |>
+  group_by(pid, neet) |>
   summarise(
-    is_competitive = any(is_competitive),
-    is_cooperative = any(is_cooperative),
-    .by = original_name
-  )
-
-# Per-person playtime shares in competitive / cooperative games
-mode_playtime <- hourly_telemetry |>
-  left_join(games_modes, by = c("title_id" = "original_name")) |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group)) |>
-  group_by(pid) |>
-  summarise(
-    total_min = sum(minutes, na.rm = TRUE),
-    competitive_min = sum(minutes[is_competitive == TRUE], na.rm = TRUE),
-    cooperative_min = sum(minutes[is_cooperative == TRUE], na.rm = TRUE),
+    value = mean(self_reported_biweekly_play, na.rm = TRUE) / 60,
     .groups = "drop"
   ) |>
+  mutate(variable = "Self-reported play (hrs / 2 wks)")
+
+# GDT mean at wave 1: recode text responses to numeric 1–5 then average items
+gdt_levels <- c(
+  "Never" = 1,
+  "Rarely" = 2,
+  "Sometimes" = 3,
+  "Often" = 4,
+  "Very often" = 5
+)
+
+gdt <- bw_matched |>
+  filter(derived_wave == 1) |>
+  mutate(across(gdt_1:gdt_4, ~ gdt_levels[.])) |>
+  mutate(value = rowMeans(pick(gdt_1:gdt_4), na.rm = TRUE)) |>
+  select(pid, neet, value) |>
+  mutate(variable = "GDT mean (wave 1, 1\u20135)")
+
+# Life satisfaction: mean across all available waves
+life_sat_dat <- bw_matched |>
+  group_by(pid, neet) |>
+  summarise(value = mean(life_sat, na.rm = TRUE), .groups = "drop") |>
+  mutate(variable = "Life satisfaction (0\u201310)")
+
+# Gaming value (work): mean across all waves (-3 to 3)
+gv_work <- bw_matched |>
+  group_by(pid, neet) |>
+  summarise(value = mean(gaming_value_work, na.rm = TRUE), .groups = "drop") |>
+  mutate(variable = "Gaming value: work (\u22123\u20133)")
+
+# Gaming value (routines): mean across all waves (-3 to 3)
+gv_routines <- bw_matched |>
+  group_by(pid, neet) |>
+  summarise(value = mean(gaming_value_routines, na.rm = TRUE), .groups = "drop") |>
+  mutate(variable = "Gaming value: routines (\u22123\u20133)")
+
+plot_data <- bind_rows(telemetry_hrs, self_rep, gdt, life_sat_dat, gv_work, gv_routines) |>
+  filter(!is.na(value)) |>
   mutate(
-    pct_competitive = 100 * competitive_min / total_min,
-    pct_cooperative = 100 * cooperative_min / total_min
-  )
-
-# Long format by demographic group (reuse build_group_membership pattern)
-mode_by_demo <- mode_playtime |>
-  pivot_longer(
-    cols = c(pct_competitive, pct_cooperative),
-    names_to = "mode",
-    names_prefix = "pct_",
-    values_to = "pct"
-  ) |>
-  mutate(mode = str_to_title(mode))
-
-mode_demo_info <- demographics |>
-  select(pid, age_group, gender, ethnicity, is_neurotypical, is_adhd, is_autism)
-
-mode_long <- mode_by_demo |>
-  left_join(mode_demo_info, by = "pid") |>
-  pivot_longer(
-    cols = c(age_group, gender, ethnicity),
-    names_to = "demographic",
-    values_to = "group"
-  ) |>
-  filter(!is.na(group)) |>
-  select(pid, mode, pct, demographic, group) |>
-  bind_rows(
-    mode_by_demo |>
-      left_join(mode_demo_info, by = "pid") |>
-      pivot_longer(
-        cols = c(is_neurotypical, is_adhd, is_autism),
-        names_to = "neuro_type",
-        values_to = "has_condition"
-      ) |>
-      filter(has_condition == TRUE) |>
-      mutate(
-        demographic = "neurodiversity",
-        group = case_when(
-          neuro_type == "is_neurotypical" ~ "Neurotypical",
-          neuro_type == "is_adhd" ~ "ADHD",
-          neuro_type == "is_autism" ~ "ASD"
-        )
-      ) |>
-      select(pid, mode, pct, demographic, group)
-  ) |>
-  mutate(
-    demographic = factor(
-      demographic,
-      levels = c("age_group", "gender", "ethnicity", "neurodiversity"),
-      labels = c("Age", "Gender", "Ethnicity", "Neurodiversity")
+    group = if_else(neet, "NEET", "Non-NEET"),
+    variable = factor(
+      variable,
+      levels = c(
+        "Telemetry playtime (hours)",
+        "Self-reported play (hrs / 2 wks)",
+        "GDT mean (wave 1, 1\u20135)",
+        "Life satisfaction (0\u201310)",
+        "Gaming value: work (\u22123\u20133)",
+        "Gaming value: routines (\u22123\u20133)"
+      )
     )
-  ) |>
-  filter(!is.na(demographic))
-
-# Summary stats: mean and bootstrap 95% CI per group × mode
-set.seed(42)
-mode_summary <- mode_long |>
-  group_by(demographic, group, mode) |>
-  summarise(
-    mean_pct = mean(pct),
-    ci_lo = quantile(replicate(1000, mean(sample(pct, replace = TRUE))), 0.025),
-    ci_hi = quantile(replicate(1000, mean(sample(pct, replace = TRUE))), 0.975),
-    .groups = "drop"
-  )
-```
-
-::: {.place arguments='top, scope: "parent", float: true'}
-```{r}
-#| label: fig-game-modes
-#| fig-cap: "Mean percentage of playtime spent in competitive multiplayer and cooperative games across demographic groups. Points show group means; horizontal lines show bootstrap 95% confidence intervals."
-#| code-summary: "Show code (game modes dot plot)"
-#| fig-env: "figure*"
-#| fig-width: 7
-#| fig-asp: 0.643
-#| out-width: 100%
-group_order <- list(
-  Age = c("18-24", "25-30", "31-35", "36-40"),
-  Gender = c("Man", "Woman", "Non-binary"),
-  Ethnicity = c("Asian", "Black", "Multiple", "Other", "White"),
-  Neurodiversity = c("ADHD", "ASD", "Neurotypical")
-)
-
-mode_summary <- mode_summary |>
-  mutate(
-    group = factor(group, levels = rev(unlist(group_order, use.names = FALSE)))
   )
 
-ggplot(mode_summary, aes(x = mean_pct, y = group, colour = mode)) +
-  geom_pointrange(
-    aes(xmin = ci_lo, xmax = ci_hi),
-    position = position_dodge(width = 0.3),
-    size = 0.4,
+ggplot(plot_data, aes(x = value, y = group, fill = group, colour = group)) +
+  # Dots drawn first so they sit underneath density and box
+  stat_dots(
+    side = "bottom",
+    overflow = "compress",
+    dotsize = 0.5,
+    alpha = 0.5
+  ) +
+  # normalize = "panels" prevents a spike in one panel from flattening all others.
+  # density_bounded(bandwidth = "nrd0") avoids Sheather-Jones failures on sparse
+  # integer data (gaming value items).
+  stat_halfeye(
+    side = "top",
+    density = density_bounded(bandwidth = "nrd0"),
+    adjust = 2,
+    normalize = "panels",
+    width = 0.5,
+    .width = 0,
+    point_colour = NA,
+    alpha = 0.7
+  ) +
+  # Boxplot drawn last so it always sits on top of dots and density
+  geom_boxplot(
+    width = 0.08,
+    outlier.shape = NA,
+    fill = "white",
+    colour = "grey20",
     linewidth = 0.5
   ) +
-  scale_colour_manual(
-    values = c("Cooperative" = "#2171B5", "Competitive" = "#CB181D"),
-    name = NULL
-  ) +
-  scale_x_continuous(
-    limits = c(30, 70),
-    breaks = seq(30, 70, by = 10),
-    labels = \(x) glue("{x}%")
-  ) +
-  facet_wrap(~demographic, scales = "free_y", nrow = 2) +
-  labs(x = "Share of playtime", y = NULL) +
-  theme_minimal(base_size = 10) +
-  theme(
-    legend.position = "top",
-    legend.margin = margin(0, 0, -5, 0),
-    strip.background = element_rect(fill = "black", colour = "black"),
-    strip.text = element_text(colour = "white", face = "bold", size = 9),
-    panel.border = element_rect(colour = "grey70", fill = NA, linewidth = 0.4),
-    panel.grid.major.y = element_blank(),
-    panel.grid.minor = element_blank(),
-    axis.text.y = element_text(size = 9),
-    axis.text.x = element_text(size = 8),
-    panel.spacing.x = unit(8, "pt")
-  )
-```
-:::
-
-
-
-## Variance decomposition
-
-The preceding analyses reveal differences in central tendency across demographic groups, but these visualizations can obscure how much of the total variation in play behavior lies between groups versus within groups. If between-group variance is small relative to within-group variance, demographic categories explain little of the overall heterogeneity in how people play—even if group means differ noticeably. 
-
-To quantify how much of the variation in play behavior is attributable to demographic categories versus individual differences, I calculated the proportion of total variance in an outcome that lies between groups rather than within groups, computed as `SS_between / SS_total`. For the combined estimate, I fit a multiple linear regression predicting each outcome from all four demographic variables simultaneously (age group, gender, ethnicity, and neurodiversity) and extracted $R^2$, which represents the total variance explained by the full demographic profile. Values near zero indicate that demographic categories explain little of the overall heterogeneity in play behavior, even when group means differ noticeably. 
-
-```{r}
-#| label: tbl-variance-decomposition
-#| tbl-cap: "Proportion of variance explained by demographic categories (eta-squared). Values represent the percentage of total variance in each outcome attributable to between-group differences."
-#| code-summary: "Show code (variance decomposition table)"
-# Genre diversity (Shannon entropy) per person
-genre_diversity <- genre_playtime_primary |>
-  group_by(pid, genre_clean) |>
-  summarise(minutes = sum(minutes, na.rm = TRUE), .groups = "drop") |>
-  group_by(pid) |>
-  mutate(prop = minutes / sum(minutes)) |>
-  summarise(
-    genre_entropy = -sum(prop * log(prop + 1e-10)),
-    n_genres = n_distinct(genre_clean),
-    .groups = "drop"
-  )
-
-# Person-level dataset with all outcomes
-variance_data <- person_data |>
-  left_join(
-    person_sessions |> select(pid, n_sessions, median_duration),
-    by = "pid"
-  ) |>
-  left_join(
-    mode_playtime |> select(pid, pct_competitive, pct_cooperative),
-    by = "pid"
-  ) |>
-  left_join(genre_diversity, by = "pid") |>
-  mutate(
-    neuro_simple = case_when(
-      is_neurotypical ~ "Neurotypical",
-      is_adhd | is_autism ~ "Neurodiverse",
-      TRUE ~ NA_character_
-    )
-  )
-
-# Outcomes and demographics
-outcomes <- tribble(
-  ~var              , ~label                   , ~category     ,
-  "weekly_hours"    , "Weekly hours"           , "Volume"      ,
-  "n_sessions"      , "Session count"          , "Volume"      ,
-  "median_duration" , "Session duration"       , "Volume"      ,
-  "genre_entropy"   , "Genre diversity"        , "Composition" ,
-  "n_genres"        , "Genres played"          , "Composition" ,
-  "pct_competitive" , "Competitive multi. \\%" , "Modes"       ,
-  "pct_cooperative" , "Cooperative \\%"        , "Modes"
-)
-
-demo_vars <- c(
-  age_group = "Age",
-  gender = "Gender",
-  ethnicity = "Ethnicity",
-  neuro_simple = "Neuro"
-)
-
-# Eta-squared for each outcome × demographic via effectsize
-eta_results <- expand_grid(
-  outcome_idx = seq_len(nrow(outcomes)),
-  demo_var = names(demo_vars)
-) |>
-  pmap_dfr(function(outcome_idx, demo_var) {
-    d <- variance_data |>
-      select(y = all_of(outcomes$var[outcome_idx]), g = all_of(demo_var)) |>
-      filter(!is.na(y), !is.na(g))
-    if (nrow(d) < 10 || n_distinct(d$g) < 2) {
-      return(NULL)
-    }
-    eta <- eta_squared(aov(y ~ g, data = d), verbose = FALSE)
-    tibble(
-      outcome = outcomes$label[outcome_idx],
-      category = outcomes$category[outcome_idx],
-      demographic = demo_vars[demo_var],
-      eta_sq = eta$Eta2
-    )
-  })
-
-# Combined R² (all demographics in one model)
-combined_results <- map_dfr(seq_len(nrow(outcomes)), function(i) {
-  d <- variance_data |>
-    select(y = all_of(outcomes$var[i]), all_of(names(demo_vars))) |>
-    filter(if_all(everything(), ~ !is.na(.)))
-  if (nrow(d) < 10) {
-    return(NULL)
-  }
-  f <- as.formula(glue("y ~ {paste(names(demo_vars), collapse = ' + ')}"))
-  tibble(
-    outcome = outcomes$label[i],
-    category = outcomes$category[i],
-    demographic = "Combined",
-    eta_sq = summary(lm(f, data = d))$r.squared
-  )
-})
-
-# Steelman: splines on age + all two-way interactions
-steelman_results <- map_dfr(seq_len(nrow(outcomes)), function(i) {
-  d <- variance_data |>
-    select(y = all_of(outcomes$var[i]), age, gender, ethnicity, neuro_simple) |>
-    filter(if_all(everything(), ~ !is.na(.)))
-  if (nrow(d) < 50) {
-    return(NULL)
-  }
-  fit <- lm(
-    y ~ splines::ns(age, 4) *
-      gender +
-      splines::ns(age, 4) * ethnicity +
-      splines::ns(age, 4) * neuro_simple +
-      gender * ethnicity +
-      gender * neuro_simple +
-      ethnicity * neuro_simple,
-    data = d
-  )
-  tibble(outcome = outcomes$label[i], steelman_r2 = summary(fit)$r.squared)
-})
-
-max_steelman_r2_pct <- round(100 * max(steelman_results$steelman_r2), 1)
-
-# Format table
-fmt_pct <- \(x) str_replace(scales::percent(x, accuracy = 0.1), "%", "\\\\%")
-
-eta_wide <- bind_rows(eta_results, combined_results) |>
-  mutate(eta_pct = fmt_pct(eta_sq)) |>
-  select(category, outcome, demographic, eta_pct) |>
-  pivot_wider(names_from = demographic, values_from = eta_pct) |>
-  rename(`Combined (linear)` = Combined) |>
-  left_join(
-    steelman_results |>
-      mutate(`Combined (complex)` = fmt_pct(steelman_r2)) |>
-      select(outcome, `Combined (complex)`),
-    by = "outcome"
-  )
-
-# Build table with category header rows programmatically
-categories <- c("Volume", "Composition", "Modes")
-col_names <- c(
-  "Outcome",
-  "Age",
-  "Gender",
-  "Ethnicity",
-  "Neuro",
-  "Combined (linear)",
-  "Combined (complex)"
-)
-empty_row <- \(label) {
-  set_names(
-    as.list(c(label, rep("", length(col_names) - 1))),
-    col_names
-  ) |>
-    as_tibble()
-}
-
-eta_table <- map_dfr(categories, function(cat) {
-  rows <- eta_wide |>
-    filter(category == cat) |>
-    select(
-      Outcome = outcome,
-      Age,
-      Gender,
-      Ethnicity,
-      Neuro,
-      `Combined (linear)`,
-      `Combined (complex)`
-    )
-  bind_rows(empty_row(cat), rows)
-})
-
-header_rows <- which(eta_table$Age == "")
-
-eta_table |>
-  tt(
-    notes = "Combined (linear) = R² from multiple regression with all demographic main effects. Combined (complex) = R² with natural splines on age and all two-way interactions. Neuro = Neurotypical vs. Neurodiverse."
-  ) |>
-  style_tt(i = header_rows, bold = TRUE) |>
-  style_tt(fontsize = 0.85) |>
-  style_tt(i = 0, bold = TRUE)
-
-# Inline variables
-max_combined_r2_pct <- round(
-  100 * max(combined_results$eta_sq, na.rm = TRUE),
-  1
-)
-max_single_eta_pct <- round(
-  100 * max(eta_results$eta_sq, na.rm = TRUE),
-  1
-)
+  facet_wrap(~variable, scales = "free_x", nrow = 3) +
+  scale_fill_manual(values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8")) +
+  scale_colour_manual(values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8")) +
+  labs(x = NULL, y = NULL) +
+  guides(fill = "none", colour = "none") +
+  theme(panel.spacing = unit(12, "pt"))
 ```
 
-@tbl-variance-decomposition shows that across all outcomes and demographic dimensions, the vast majority of variance in play behavior is within-group rather than between-group. Demographic categories explain less than 3% of total variance in every case, with most values below 1%. Even in a more parameterized specification with flexible age effects and all two-way interactions, the maximum variance explained was `r max_steelman_r2_pct`%. 
-
-In short, individuals within the same demographic group differ from one another far more than group averages differ from each other. This pattern holds across play volume, genre composition, and game mode outcomes, reinforcing that demographic labels capture only a small slice of the heterogeneity in how people play.
-
-
-```{r}
-#| label: calc-shooter-overlap
-#| code-summary: "Show code (shooter genre overlap statistics)"
-# Per-person shooter proportion
-shooter_by_person <- genre_by_demo_primary |>
-  group_by(pid, gender) |>
-  summarise(
-    shooter_min = sum(minutes[genre_clean == "Shooter"], na.rm = TRUE),
-    total_min = sum(minutes, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  mutate(shooter_pct = 100 * shooter_min / total_min)
-
-men_shooter_pct <- round(
-  mean(shooter_by_person$shooter_pct[shooter_by_person$gender == "Man"]),
-  1
-)
-women_shooter_pct <- round(
-  mean(shooter_by_person$shooter_pct[shooter_by_person$gender == "Woman"]),
-  1
-)
-women_above_result <- sum(
-  shooter_by_person$shooter_pct[shooter_by_person$gender == "Woman"] >
-    men_shooter_pct
-)
-```
-
-# Discussion
-
-The results presented here show a variety of trends among demographic groups in a diverse sample of UK and US adult video game players. Many these have been documented in prior survey-based research, such as the prevalence of sports game play among men and simulation game play among women [@PhanEtAl2012Examining] or the preference for RPGs among adults with autism [@MazurekEtAl2015Video]. Other patterns are intuitive and have been theorized, but rarely directly observed and quantified in naturalistic behavioral data, such as the earlier peak play hour for older players [@ReamEtAl2013Trends].
-
-However, despite the presence of these trends, the overall picture is one of substantial heterogeneity within groups, and thus overlap between them. For every observed difference, there are many individuals in the "opposite" group who show the same behavior. For example, although there is a marked difference in the average proportion of time men and women in the sample spent playing games in the shooter genre (`r men_shooter_pct`% vs `r women_shooter_pct`% on average), there are still `r women_above_result` women who have a higher shooter proportion than the average man. Results showing that effectively all permutations of play volume, timing and genre allocation are present in all demographic groups serves as a form of counter-stereotypical examples, a method recommended for reducing and reversing implicit biases in games culture [@FlanaganKaufman2017Shifting]. 
-
-In other words: while trends emerge at a bird's eye view, knowing an individual's complete demographic profile tells us remarkably little about their actual play behavior. Even with all demographic variables combined, a researcher could explain at most `r max_steelman_r2_pct`% of the variance in any single play outcome (@tbl-variance-decomposition). These findings echo early trace data studies showing demographic categories explain minimal variance in play patterns [@WilliamsEtAl2008Who], but extend them to contemporary multi-platform contexts and provide explicit variance decomposition. 
-
-It is vital to interpret these results with care, and to avoid overgeneralization or stereotyping. The observed differences do not necessarily reflect stable preferences or inherent traits of demographic groups, but rather patterns of behavior that emerge from a complex interplay of structural factors, cultural contexts, and individual circumstances. For example, differences in temporal play patterns may reflect differences in work schedules [e.g., @LeeChen2023Seeking], caregiving responsibilities [e.g., @WangEtAl2018Families], accessibility concerns [@PorterKientz2013empirical], or availability of gaming platforms [e.g., @HaKim2024Barriers], rather than intrinsic preferences for when to play. Similarly, genre preferences may be shaped by factors such as marketing, social norms, or peer influence, rather than inherent tastes. For example, it is long-established that White adult male characters are over-represented among video game characters, while Black female characters and many other groups are under-represented [@WilliamsEtAl2009virtual; @JonesEtAl2025virtual; cf. @GardnerTanenbaum2018Dynamic], which may contribute to the observed differences in genre allocation.
-
-With those caveats in mind, this work still offers several contributions for the field: it offers a foundation for hypothesis generation, theory specification, and study design; highlights behavioral dimensions such as temporal patterns or genre diversity that may be more informative outcomes than total playtime; and points to the value of behavioral trace data in revealing how people actually play, rather than what they say about their play.
-
-## Implications for the Use of Demographic Variables
-
-These findings complicate how demographic categories should function in games HCI theory. When within-group variance is at least 18x larger than between-group variance, demographics may be valuable as contextual background variables but are unlikely to be useful as primary predictors of behavioral outcomes. Such empirical backing reinforces known challenges for theory, quantitative methods, and design.
-
-On the theory side, I argue for improved specification of the specific *mechanisms* through which demographics matter rather than treating them as proxies for preferences. Although there is widespread recognition of the pitfalls of demographic essentialism at the theory level, empirical studies often use and interpret demographics are key predictors of outcomes such as motivational styles or player types [@Yee2006motivations], esports participation [@KordyakaEtAl2023Gender], or internet gaming disorder [@Lopez-FernandezEtAl2019Female]. Such use of demographic variables may serve as a proxy for preferences or behaviors, masking the underlying mechanistic differences on which the field could actually intervene. Future work with representative samples and/or qualitative methods can help unpack which of these trends generalize to other metrics of real-world play, and why they occur (access? cultural exposure? time constraints?).
-
-Eventually, such work may allow mechanism-related variables to supplement demographics themselves in quantitative studies. Results here show that the use of demographics variables in statistical models should be carefully considered. Researchers should report and be mindful of effect sizes, and ensure that statistical significance of a particular demographic variable is not conflated with the practical significance thereof [@Kirk1996Practical; @VornhagenEtAl2020Statisticala].
-
-With regard to design, these results suggest that demographic categories may be useful for coarse segmentation, but heterogeneity will often be too large to reliably base more granular decisions such as design for diverse groups such as women or older players [@GerlingEtAl2012Game; @KaufmanEtAl2019Not]. Behavioral segmentation based on characteristics like genre allocation and temporal play patterns, a well-established industry practice [@YinEtAl2025Modeling; @zotero-item-16756], offers a valuable alternative for many design or intervention decisions. 
-
-To reiterate, low predictive strength does not mean demographics have no value for design or analytics. Observed differences in temporal organization and engagement span suggest that features such as session length expectations, save mechanics, or live-service timing may differentially fit players with distinct demographic constraints (@fig-temporal). Similarly, genre portfolio patterns can inform decisions about cross-promotion, onboarding pathways, and content diversification strategies.
-
-## Limitations, Generalizability, and Future Directions
-
-As highlighted throughout this piece, these data do not provide strong evidence for generalizable differences between groups. I did not apply weighting or conduct hypothesis tests. Observed differences should not be interpreted as stable preferences or group traits, as these data cannot meaningfully distinguish access effects from preference effects. 
-
-The gameplay behavior observed here is wide but shallow - while the data captured individuals' play across a wide variety of titles (mean: `r games_per_player` distinct titles per player), it does not capture their behavior within particular games. To advance knowledge on various topics typically studied using self-reports or in lab settings, deep game-level is needed instead: for example, avatar selection data to study the Proteus Effect [@YeeBailenson2007Proteus], performance data to study skill acquisition [@RatanEtAl2015Stand], and communications and friends data to understand gender differences in social behavior [@Wilhelm2018Gender]. Achieving such advances will require more widespread adoption of the full trace data collection toolkit, ranging from data donation [which has already proven successful for behavioral research on social media, e.g., @YapEtAl2024Digital; @EsNguyen2025BingeWatching], scraping-based methods [@BallouEtAl2024Registered], and existing APIs [e.g., @VuorreEtAl2021largescale; although see @DavidsonEtAl2023Platformcontrolled for transparency issues associated with platform-provided APIs]. 
-
-Further, while the quasi-representative sampling strategy underlying this data produced a sample more diverse than many comparable studies of video game trace data [e.g., @BallouEtAl2024Registered; @LarrieuEtAl2023How], the sample here is not random or representative of either the general population or of all video game players. Such trade-offs are inherent: with the exception of extremely rare studies that have access to population data via platform owners [e.g., @ZendleEtAl2023Crosscultural], collecting demographic data requires contacting individual participants who may elect not to join the study. Selection biases are thus present with regard to willingness to share data, sufficient gaming on included platforms, and participation in the survey platforms from which recruitment took place (Prolific, PureProfile). 
-
-I particularly draw attention to the exclusion of mobile gaming due to insufficient data granularity, as previous results have shown that the demographics of mobile players systematically differ from those of other gaming platforms [@EntertainmentSoftwareAssociation20252025; @GottfriedSidoti2024Teens]. Similarly, the lack of Xbox data among UK participants means recorded behavior and game composition differs across countries ; to mitigate this, the analyses intentionally do not compare the US and UK, but group all participants. The combination of selection biases present in the study also likely contributed to some of the surprising characteristics of the sample, such as high self-reported rates of neurodiversity. 
-
-In short, more representative or targeted samples, deep game-level data, and qualitative follow-up are all needed to build on this work. Future research should aim to disentangle access effects from preference effects, assess the generalizability of these patterns, and further unpack the lived experiences underlying observed demographic differences.
-
-# Conclusion
-
-This study used publicly available behavioral trace data from Steam, Xbox, and Nintendo Switch to describe how play patterns vary across age, gender, ethnicity, and neurodiversity in a diverse sample of `r nrow(analytic_sample)` US and UK adults. Results revealed a range of demographic differences in play volume, temporal organization, engagement span, and genre composition, many of which corroborate prior survey-based findings, while others (such as the earlier peak playtime among older players or the longer engagement spans among women and Black players) have rarely been directly observed in naturalistic data. 
-
-Yet the overarching finding is one of within-group heterogeneity: demographic characteristics collectively explained less than 6% of the variance in any dimension of play behavior examined. These results suggest that while demographic categories remain useful for coarse description and hypothesis generation, they are poor proxies for how any individual actually plays. Future work should aim to move beyond demographics as default predictors, instead investigating the structural, cultural, and individual-level mechanisms that give rise to the patterns observed here, and doing so with representative samples, deep game-level data, and methods that center players' own accounts of their play.
-
-# Data Availability
-
-[Redacted for anonymous peer review]
-
-<!-- Data and analysis code are available on Zenodo: {{< meta data-url >}} -->
-
-# Funding
-
-[Redacted for anonymous peer review]
-
-<!-- Primary data collection was supported by the UK Economic and Social Research Council (ES/W012626/1 and ES/Y010736/1). Time for this analysis was supported by the Huo Family Foundation Early Career Fellowship.  -->
-
-# Disclosures
-
-A portion of the data in this study (Xbox and Nintendo Switch trace data) was collected via data-sharing agreements with Microsoft, Nintendo of America, and Nintendo of Europe. Industry partners did not contribute funding for the research or any of the researchers involved in conducting it, and had no role in the design, analysis, or publication of results.
-
-The author declares no other potential financial, intellectual, or institutional conflicts of interests. 
-
-<!-- NB declares no competing financial, intellectual, or institutional interests. Disclosures below are provided in the interest of full transparency.
-
-NB has worked on scientific projects funded by government and charitable grants that used data from tech companies provided under a data-sharing agreement. NB has never received funding or compensation from the tech companies or other industries connected to the work presented here. 
-
-Data-sharing partners had no role in the design, analysis, or publication of results.  -->
-
-# Generative AI
-
-Claude Code (claude-opus-4-5-20251101) assisted with writing, editing, and documenting analysis code. All analyses were reviewed, amended where necessary and approved; the author takes full responsibility for the content of the analyses and paper. 
-
-# Acknowledgements
-
-[Redacted]
-
-<!-- I'd like to thank Tamás Földes for critical contributions to the underlying data collection, and for feedback on this manuscript. -->
-
-# References
-
-::: {#refs .content-visible when-format="html"}
-:::
-
-
-```{=typst}
-#set page(columns: 1)
-```
-
-```{=latex}
-\newpage
-\appendix
-\setcounter{table}{0}
-\renewcommand{\thetable}{A\arabic{table}}
-\setcounter{figure}{0}
-\renewcommand{\thefigure}{A\arabic{figure}}
-```
-
-```{=typst}
-#counter(figure.where(kind: "quarto-float-tbl")).update(0)
-#counter(figure.where(kind: "quarto-float-fig")).update(0)
-#set figure(numbering: it => "A" + str(it))
-```
-
-# Appendix {.appendix}
-
-```{r}
-#| label: tbl-platforms
-#| tbl-cap: "Platform details."
-tibble(
-  Platform = c(
-    "Nintendo",
-    "Xbox (US only)",
-    "Steam",
-    "iOS",
-    "Android"
-  ),
-  Source = c(
-    "Nintendo of America/Europe data-sharing",
-    "Microsoft data-sharing",
-    "Custom web app (Gameplay.Science)",
-    "iOS Screen Time screenshots",
-    "Digital Wellbeing screenshots"
-  ),
-  `Account Linking` = c(
-    "Participants share QR code identifier from Nintendo web interface; Nintendo retrieves and shares gameplay data",
-    "Participants opt in via Xbox Insiders; Microsoft shares pseudonymized data",
-    "Participants authenticate via Steam API (OpenID); gameplay monitored for study duration",
-    "Screenshots of up to 3 weeks of gaming; data extracted via OCR",
-    "Screenshots of up to 3 weeks of gaming; data extracted via OCR"
-  ),
-  `Data Type` = c(
-    "Session records (game, time, duration) for first-party Nintendo games only",
-    "Session records with anonymized titles; genre and age rating preserved",
-    "Hourly aggregates per game.",
-    "Daily aggregates",
-    "Daily aggregates"
-  )
-) |>
-  tt(
-    notes = "Nintendo-published games accounted for 63 percent of Switch playtime in the sample.",
-    width = 1
-  ) |>
-  style_tt(fontsize = 0.7) |>
-  style_tt(i = 0, bold = TRUE, align = "c")
-```
-
-```{r}
-#| label: tbl-top-games
-#| tbl-cap: "Top 5 games by total playtime for each demographic group (Nintendo and Steam only; Xbox titles excluded due to de-identification)."
-# Get top games per demographic group (excluding Xbox)
-# First prepare data with neurodiversity as a single column
-telemetry_with_demo <- hourly_telemetry |>
-  filter(platform != "Xbox") |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group))
-
-# Standard demographics (age, gender, ethnicity)
-top_games_standard <- telemetry_with_demo |>
-  pivot_longer(
-    cols = c(age_group, gender, ethnicity),
-    names_to = "demo_type",
-    values_to = "demo_group"
-  ) |>
-  filter(!is.na(demo_group)) |>
-  group_by(demo_type, demo_group, title_id) |>
-  summarise(total_hours = sum(minutes, na.rm = TRUE) / 60, .groups = "drop")
-
-# Neurodiversity (non-exclusive categories handled separately)
-top_games_neuro <- bind_rows(
-  telemetry_with_demo |>
-    filter(is_neurotypical == TRUE) |>
-    group_by(title_id) |>
-    summarise(
-      total_hours = sum(minutes, na.rm = TRUE) / 60,
-      .groups = "drop"
-    ) |>
-    mutate(demo_type = "neurodiversity", demo_group = "Neurotypical"),
-  telemetry_with_demo |>
-    filter(is_adhd == TRUE) |>
-    group_by(title_id) |>
-    summarise(
-      total_hours = sum(minutes, na.rm = TRUE) / 60,
-      .groups = "drop"
-    ) |>
-    mutate(demo_type = "neurodiversity", demo_group = "ADHD"),
-  telemetry_with_demo |>
-    filter(is_autism == TRUE) |>
-    group_by(title_id) |>
-    summarise(
-      total_hours = sum(minutes, na.rm = TRUE) / 60,
-      .groups = "drop"
-    ) |>
-    mutate(demo_type = "neurodiversity", demo_group = "ASD")
-)
-
-top_games_by_demo <- bind_rows(top_games_standard, top_games_neuro) |>
-  # Get top 5 per demographic group
-  group_by(demo_type, demo_group) |>
-  slice_max(total_hours, n = 5) |>
-  mutate(rank = row_number()) |>
-  ungroup() |>
-  # Clean up demo_type names
-  mutate(
-    demo_type = case_when(
-      demo_type == "age_group" ~ "Age",
-      demo_type == "gender" ~ "Gender",
-      demo_type == "ethnicity" ~ "Ethnicity",
-      demo_type == "neurodiversity" ~ "Neurodiversity"
-    )
-  )
-
-# Pivot to wide format for display
-top_games_wide <- top_games_by_demo |>
-  mutate(
-    game_label = glue("{title_id}\n({scales::comma(round(total_hours))}h)")
-  ) |>
-  select(demo_type, demo_group, rank, game_label) |>
-  pivot_wider(
-    names_from = rank,
-    values_from = game_label,
-    names_prefix = "Rank "
-  ) |>
-  arrange(demo_type, demo_group) |>
-  rename(Demographic = demo_type, Group = demo_group)
-
-top_games_wide |>
-  tt(width = 1) |>
-  style_tt(fontsize = 0.6) |>
-  style_tt(i = 0, bold = TRUE)
-```
-
-```{r}
-#| label: fig-genre-bar-multi
-#| fig-cap: "Genre playtime deviation from leave-one-out reference across demographic groups (all genres). Games contribute playtime to all genres they are tagged with, apportioned equally across tags. Bars show each group's median genre allocation relative to all others in the same demographic dimension."
-#| code-summary: "Show code (multi-genre deviation bar chart)"
-#| fig-width: 10
-#| fig-asp: 1.2
-#| out-width: 100%
-build_genre_bar_grid(
-  genre_props_dev_plot_multi,
-  genre_ci_multi,
-  group_ns_multi,
-  group_colors
-)
-```
-
-```{r}
-#| label: tbl-genre-playtime
-#| tbl-cap: "Median individual genre allocation by raw genre categories across demographic groups. Values show median percentage of each player's playtime allocated to each genre. The 'Radar' column shows the simplified category used in radar charts (— if not included)."
-# Get all raw genres (before simplification)
-games_all_genres <- games |>
-  filter(!is.na(genres)) |>
-  separate_rows(genres, sep = ",\\s*") |>
-  distinct(original_name, genres) |>
-  group_by(original_name) |>
-  mutate(genre_weight = 1 / n()) |>
-
-  ungroup()
-
-# Calculate playtime by raw genre and demographic
-genre_playtime_raw <- hourly_telemetry |>
-  left_join(
-    games_all_genres,
-    by = c("title_id" = "original_name"),
-    relationship = "many-to-many"
-  ) |>
-  filter(!is.na(genres)) |>
-  mutate(minutes_weighted = minutes * genre_weight) |>
-  left_join(demographics, by = "pid") |>
-  filter(!is.na(age_group))
-
-# Step 1: Calculate individual-level genre proportions
-individual_genre_props <- genre_playtime_raw |>
-  group_by(pid, genres) |>
-  summarise(
-    genre_minutes = sum(minutes_weighted, na.rm = TRUE),
-    .groups = "drop"
-  ) |>
-  group_by(pid) |>
-  mutate(individual_prop = genre_minutes / sum(genre_minutes) * 100) |>
-  ungroup()
-
-# Join demographic info back
-individual_with_demo <- individual_genre_props |>
-  left_join(
-    demographics |>
-      select(
-        pid,
-        age_group,
-        gender,
-        ethnicity,
-        is_neurotypical,
-        is_adhd,
-        is_autism
-      ),
-    by = "pid"
-  )
-
-# Helper to calculate median props for a grouping variable
-calc_median_props <- function(data, group_var, demo_name) {
-  data |>
-    filter(!is.na(.data[[group_var]])) |>
-    group_by(.data[[group_var]], genres) |>
-    summarise(prop = median(individual_prop, na.rm = TRUE), .groups = "drop") |>
-    rename(group = all_of(group_var)) |>
-    mutate(demo = demo_name)
-}
-
-# Calculate for all demographics using median of individual allocations
-all_genre_props <- bind_rows(
-  calc_median_props(individual_with_demo, "age_group", "Age"),
-  calc_median_props(individual_with_demo, "gender", "Gender"),
-  calc_median_props(individual_with_demo, "ethnicity", "Ethnicity"),
-  # Neurodiversity (non-exclusive categories)
-  bind_rows(
-    individual_with_demo |>
-      filter(is_neurotypical == TRUE) |>
-      group_by(genres) |>
-      summarise(
-        prop = median(individual_prop, na.rm = TRUE),
-        .groups = "drop"
-      ) |>
-      mutate(group = "Neurotypical"),
-    individual_with_demo |>
-      filter(is_adhd == TRUE) |>
-      group_by(genres) |>
-      summarise(
-        prop = median(individual_prop, na.rm = TRUE),
-        .groups = "drop"
-      ) |>
-      mutate(group = "ADHD"),
-    individual_with_demo |>
-      filter(is_autism == TRUE) |>
-      group_by(genres) |>
-      summarise(
-        prop = median(individual_prop, na.rm = TRUE),
-        .groups = "drop"
-      ) |>
-      mutate(group = "Autism")
-  ) |>
-    mutate(demo = "Neuro")
-) |>
-  mutate(prop_fmt = sprintf("%.1f", prop))
-
-# Create genre mapping - only show if it maps to one of the TOP 8 genres in radar
-genre_mapping <- tibble(genres = unique(all_genre_props$genres)) |>
-  mutate(
-    cleaned = clean_genre(genres),
-    abbreviated = abbreviate_genre(cleaned),
-    # Only show mapping if it's in the top_genres used in radar
-    maps_to = if_else(abbreviated %in% top_genres, abbreviated, "—")
-  ) |>
-  select(genres, maps_to)
-
-# Calculate overall mean to sort by
-genre_order <- all_genre_props |>
-  group_by(genres) |>
-  summarise(mean_prop = mean(prop), .groups = "drop") |>
-  arrange(desc(mean_prop)) |>
-  pull(genres)
-
-# Pivot to wide format with readable column names (~5 chars)
-genre_table <- all_genre_props |>
-  mutate(
-    group_abbr = case_when(
-      group == "18-24" ~ "18-24",
-      group == "25-30" ~ "25-30",
-      group == "31-35" ~ "31-35",
-      group == "36-40" ~ "36-40",
-      group == "Man" ~ "Man",
-      group == "Woman" ~ "Woman",
-      group == "Non-binary" ~ "NB/Ot",
-      group == "Asian" ~ "Asian",
-      group == "Black" ~ "Black",
-      group == "Mixed/Multiple" ~ "Multiple",
-      group == "Other" ~ "Other",
-      group == "White" ~ "White",
-      group == "Neurotypical" ~ "Neuro",
-      group == "ADHD" ~ "ADHD",
-      group == "Autism" ~ "Autis",
-      TRUE ~ group
-    )
-  ) |>
-  select(genres, group_abbr, prop_fmt) |>
-  pivot_wider(
-    names_from = group_abbr,
-    values_from = prop_fmt,
-    values_fill = "0.0"
-  ) |>
-  left_join(genre_mapping, by = "genres") |>
-  mutate(
-    genres = str_replace_all(genres, "&", "and"),
-    genres = factor(genres, levels = str_replace_all(genre_order, "&", "and"))
-  ) |>
-  arrange(genres) |>
-  select(Genre = genres, Radar = maps_to, everything())
-
-genre_table |>
-  tt(
-    notes = "Values are median percentages of individual players' genre allocations (matching radar chart methodology). 'Radar' shows the simplified category used in the main text radar plot (— if genre is not included in the 8 simplified categories). Neuro = Neurotypical, ASD = Autism spectrum.",
-    width = 1
-  ) |>
-  style_tt(fontsize = 0.5) |>
-  style_tt(i = 0, bold = TRUE, fontsize = 0.45)
-```
