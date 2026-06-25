@@ -529,8 +529,9 @@ dat <- intake |>
 #| label: prepare-matching
 #| code-summary: "Show code (1:1 propensity score matching of NEET to non-NEET participants)"
 #| output: false
-#| include: false
-#| 
+#| warning: false
+#| message: false
+
 # Match each NEET participant to one non-NEET participant with similar age,
 # gender, ethnicity, and country using nearest-neighbor PSM (logistic propensity model).
 match_input <- dat |>
@@ -770,34 +771,35 @@ plot_data <- bind_rows(
     )
   )
 
-ggplot(plot_data, aes(x = value, y = group, fill = group, colour = group)) +
-  # Dots drawn first so they sit underneath density and box
-  stat_dots(
-    side = "bottom",
+ggplot(plot_data, aes(x = value, y = group, colour = group, fill = group)) +
+  # Mirrored dotsinterval: NEET dots face downward, Non-NEET upward
+  stat_dotsinterval(
+    aes(side = if_else(neet, "bottom", "top")),
     overflow = "compress",
-    dotsize = 0.5,
-    alpha = 0.5
+    dotsize = 0.4,
+    alpha = 0.7,
+    .width = c(0.5, 0.95)
   ) +
-  # normalize = "panels" prevents a spike in one panel from flattening all others.
-  # density_bounded(bandwidth = "nrd0") avoids Sheather-Jones failures on sparse
-  # integer data (gaming value items).
-  stat_halfeye(
-    side = "top",
-    density = density_bounded(bandwidth = "nrd0"),
-    adjust = 2,
-    normalize = "panels",
-    width = 0.5,
-    .width = 0,
-    point_colour = NA,
-    alpha = 0.7
+  # Line connecting group means within each panel
+  stat_summary(
+    aes(group = 1),
+    fun = mean,
+    geom = "line",
+    colour = "black",
+    linewidth = 0.7,
+    orientation = "y"
   ) +
-  # Boxplot drawn last so it always sits on top of dots and density
-  geom_boxplot(
-    width = 0.08,
-    outlier.shape = NA,
+  # Mean points on the connecting line
+  stat_summary(
+    aes(group = 1),
+    fun = mean,
+    geom = "point",
+    colour = "black",
+    size = 2.5,
+    shape = 21,
     fill = "white",
-    colour = "grey20",
-    linewidth = 0.5
+    stroke = 1,
+    orientation = "y"
   ) +
   facet_wrap(~variable, scales = "free_x", nrow = 3) +
   scale_fill_manual(values = c("NEET" = "#E41A1C", "Non-NEET" = "#377EB8")) +
